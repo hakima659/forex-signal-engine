@@ -1,11 +1,3 @@
-
-// ============================================================
-// FOREX SIGNAL ENGINE V1
-// Separate Cloudflare Worker
-// Repository: forex-signal-engine
-// File: forex-engine.js
-// ============================================================
-
 const CONFIG = {
   symbols: [
     "EUR/USD",
@@ -18,7 +10,7 @@ const CONFIG = {
   confirmInterval: "1h",
 
   candles15: 250,
-  candles1h: 150,
+  candles1h: 250,
 
   minScore: 75,
 
@@ -77,14 +69,11 @@ export default {
       }
 
       if (request.method === "GET" && path === "/sitemap.xml") {
-        return new Response(
-          sitemapXml(url.origin),
-          {
-            headers: {
-              "content-type": "application/xml; charset=UTF-8"
-            }
+        return new Response(sitemapXml(url.origin), {
+          headers: {
+            "content-type": "application/xml; charset=UTF-8"
           }
-        );
+        });
       }
 
       if (request.method === "GET" && path === "/setup-chat") {
@@ -144,7 +133,6 @@ export default {
     }
   },
 
-
   async scheduled(event, env, ctx) {
     ctx.waitUntil(runEngine(env));
   }
@@ -173,50 +161,32 @@ async function initDatabase(env) {
 
     CREATE TABLE IF NOT EXISTS signals (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-
       symbol TEXT NOT NULL,
       direction TEXT NOT NULL,
-
       timeframe TEXT NOT NULL,
-
       score INTEGER NOT NULL,
-
       entry REAL NOT NULL,
       stop_loss REAL NOT NULL,
-
       tp1 REAL NOT NULL,
       tp2 REAL NOT NULL,
-
       initial_r REAL NOT NULL,
-
       status TEXT DEFAULT 'ACTIVE',
-
       tp1_hit INTEGER DEFAULT 0,
       tp2_hit INTEGER DEFAULT 0,
-
       breakeven_applied INTEGER DEFAULT 0,
-
       result_r REAL DEFAULT NULL,
-
       exit_price REAL DEFAULT NULL,
-
       created_at TEXT DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
-
       closed_at TEXT DEFAULT NULL
     );
 
     CREATE TABLE IF NOT EXISTS signal_events (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-
       signal_id INTEGER NOT NULL,
-
       event_type TEXT NOT NULL,
-
       price REAL,
-
       note TEXT,
-
       created_at TEXT DEFAULT CURRENT_TIMESTAMP
     );
 
@@ -251,11 +221,6 @@ async function runEngine(env) {
     errors: []
   };
 
-
-  // ----------------------------------------------------------
-  // First update existing trades
-  // ----------------------------------------------------------
-
   try {
     await updateOpenSignals(env);
   } catch (error) {
@@ -264,11 +229,6 @@ async function runEngine(env) {
       String(error?.message || error)
     );
   }
-
-
-  // ----------------------------------------------------------
-  // Limit open trades
-  // ----------------------------------------------------------
 
   const openCountResult = await env.DB.prepare(`
     SELECT COUNT(*) AS count
@@ -279,19 +239,11 @@ async function runEngine(env) {
   let openCount =
     Number(openCountResult?.count || 0);
 
-
   if (openCount >= CONFIG.maxOpenSignals) {
-
     result.finishedAt = new Date().toISOString();
     result.durationMs = Date.now() - started;
-
     return result;
   }
-
-
-  // ----------------------------------------------------------
-  // Scan markets
-  // ----------------------------------------------------------
 
   for (const symbol of CONFIG.symbols) {
 
@@ -307,16 +259,12 @@ async function runEngine(env) {
     try {
 
       const candidate =
-        await analyzeSymbol(
-          symbol,
-          env
-        );
+        await analyzeSymbol(symbol, env);
 
       if (!candidate) {
         result.skipped++;
         continue;
       }
-
 
       const cooldown =
         await isInCooldown(
@@ -330,34 +278,22 @@ async function runEngine(env) {
         continue;
       }
 
-
       const alreadyOpen =
-        await hasOpenSignal(
-          env,
-          symbol
-        );
+        await hasOpenSignal(env, symbol);
 
       if (alreadyOpen) {
         result.skipped++;
         continue;
       }
 
-
-      const signalId =
-        await createSignal(
-          env,
-          candidate
-        );
-
+      await createSignal(env, candidate);
 
       await sendTelegram(
         env,
         formatNewSignal(candidate)
       );
 
-
       result.created++;
-
       openCount++;
 
       if (
@@ -376,7 +312,6 @@ async function runEngine(env) {
       );
     }
   }
-
 
   result.finishedAt =
     new Date().toISOString();
@@ -410,7 +345,6 @@ async function analyzeSymbol(symbol, env) {
       CONFIG.candles1h
     );
 
-
   if (
     candles15.length < 210 ||
     candles1h.length < 210
@@ -418,13 +352,11 @@ async function analyzeSymbol(symbol, env) {
     return null;
   }
 
-
   const close15 =
     candles15.map(x => x.close);
 
   const close1h =
     candles1h.map(x => x.close);
-
 
   const ema20 =
     EMA(close15, 20);
@@ -435,7 +367,6 @@ async function analyzeSymbol(symbol, env) {
   const ema200 =
     EMA(close15, 200);
 
-
   const ema20_1h =
     EMA(close1h, 20);
 
@@ -445,17 +376,14 @@ async function analyzeSymbol(symbol, env) {
   const ema200_1h =
     EMA(close1h, 200);
 
-
   const rsi =
     RSI(close15, 14);
 
   const macd =
     MACD(close15);
 
-
   const atr =
     ATR(candles15, 14);
-
 
   const last =
     candles15[candles15.length - 1];
@@ -463,14 +391,11 @@ async function analyzeSymbol(symbol, env) {
   const previous =
     candles15[candles15.length - 2];
 
-
   const price =
     last.close;
 
-
   const atrValue =
     atr[atr.length - 1];
-
 
   if (
     !Number.isFinite(price) ||
@@ -479,7 +404,6 @@ async function analyzeSymbol(symbol, env) {
   ) {
     return null;
   }
-
 
   const currentEma20 =
     ema20[ema20.length - 1];
@@ -490,7 +414,6 @@ async function analyzeSymbol(symbol, env) {
   const currentEma200 =
     ema200[ema200.length - 1];
 
-
   const h1Ema20 =
     ema20_1h[ema20_1h.length - 1];
 
@@ -500,10 +423,8 @@ async function analyzeSymbol(symbol, env) {
   const h1Ema200 =
     ema200_1h[ema200_1h.length - 1];
 
-
   const currentRsi =
     rsi[rsi.length - 1];
-
 
   const currentMacd =
     macd.macd[macd.macd.length - 1];
@@ -511,14 +432,8 @@ async function analyzeSymbol(symbol, env) {
   const currentSignal =
     macd.signal[macd.signal.length - 1];
 
-
   let longScore = 0;
   let shortScore = 0;
-
-
-  // ----------------------------------------------------------
-  // 15M EMA
-  // ----------------------------------------------------------
 
   if (
     price > currentEma20 &&
@@ -536,11 +451,6 @@ async function analyzeSymbol(symbol, env) {
     shortScore += 25;
   }
 
-
-  // ----------------------------------------------------------
-  // 1H confirmation
-  // ----------------------------------------------------------
-
   if (
     h1Ema20 > h1Ema50 &&
     h1Ema50 > h1Ema200
@@ -554,11 +464,6 @@ async function analyzeSymbol(symbol, env) {
   ) {
     shortScore += 20;
   }
-
-
-  // ----------------------------------------------------------
-  // RSI
-  // ----------------------------------------------------------
 
   if (
     currentRsi >= 50 &&
@@ -574,11 +479,6 @@ async function analyzeSymbol(symbol, env) {
     shortScore += 15;
   }
 
-
-  // ----------------------------------------------------------
-  // MACD
-  // ----------------------------------------------------------
-
   if (
     currentMacd > currentSignal
   ) {
@@ -590,11 +490,6 @@ async function analyzeSymbol(symbol, env) {
   ) {
     shortScore += 15;
   }
-
-
-  // ----------------------------------------------------------
-  // Momentum
-  // ----------------------------------------------------------
 
   if (
     last.close > previous.close
@@ -608,17 +503,11 @@ async function analyzeSymbol(symbol, env) {
     shortScore += 10;
   }
 
-
-  // ----------------------------------------------------------
-  // Breakout / recent high-low
-  // ----------------------------------------------------------
-
   const recent =
     candles15.slice(
       Math.max(0, candles15.length - 21),
       candles15.length - 1
     );
-
 
   const recentHigh =
     Math.max(
@@ -630,7 +519,6 @@ async function analyzeSymbol(symbol, env) {
       ...recent.map(x => x.low)
     );
 
-
   if (price > recentHigh) {
     longScore += 15;
   }
@@ -639,14 +527,8 @@ async function analyzeSymbol(symbol, env) {
     shortScore += 15;
   }
 
-
-  // ----------------------------------------------------------
-  // Select direction
-  // ----------------------------------------------------------
-
   let direction;
   let score;
-
 
   if (
     longScore >= shortScore
@@ -658,24 +540,17 @@ async function analyzeSymbol(symbol, env) {
     score = shortScore;
   }
 
-
   if (
     score < CONFIG.minScore
   ) {
     return null;
   }
 
-
-  // ----------------------------------------------------------
-  // Candle confirmation
-  // ----------------------------------------------------------
-
   const bullishCandle =
     last.close > last.open;
 
   const bearishCandle =
     last.close < last.open;
-
 
   if (
     direction === "LONG" &&
@@ -691,22 +566,15 @@ async function analyzeSymbol(symbol, env) {
     return null;
   }
 
-
-  // ----------------------------------------------------------
-  // Stop / targets
-  // ----------------------------------------------------------
-
   const risk =
     atrValue * CONFIG.atrMultiplier;
 
-
-  let entry =
+  const entry =
     price;
 
   let stopLoss;
   let tp1;
   let tp2;
-
 
   if (direction === "LONG") {
 
@@ -735,12 +603,10 @@ async function analyzeSymbol(symbol, env) {
       risk * CONFIG.tp2R;
   }
 
-
   return {
     symbol,
     direction,
     timeframe: CONFIG.signalInterval,
-
     score,
 
     entry: roundPrice(
@@ -796,12 +662,10 @@ async function getCandles(
     );
   }
 
-
   const url =
     new URL(
       "https://api.twelvedata.com/time_series"
     );
-
 
   url.searchParams.set(
     "symbol",
@@ -823,7 +687,6 @@ async function getCandles(
     env.TWELVE_DATA_API_KEY
   );
 
-
   const response =
     await fetchWithTimeout(
       url.toString(),
@@ -836,7 +699,6 @@ async function getCandles(
       CONFIG.requestTimeoutMs
     );
 
-
   if (!response.ok) {
     throw new Error(
       "Twelve Data HTTP " +
@@ -844,10 +706,8 @@ async function getCandles(
     );
   }
 
-
   const data =
     await response.json();
-
 
   if (
     data.status === "error"
@@ -858,11 +718,8 @@ async function getCandles(
     );
   }
 
-
   if (
-    !Array.isArray(
-      data.values
-    )
+    !Array.isArray(data.values)
   ) {
     throw new Error(
       "No candle data returned for " +
@@ -870,32 +727,26 @@ async function getCandles(
     );
   }
 
+  return data.values
+    .map(item => ({
+      time: item.datetime,
+      open: Number(item.open),
+      high: Number(item.high),
+      low: Number(item.low),
+      close: Number(item.close),
 
-  const candles =
-    data.values
-      .map(item => ({
-        time: item.datetime,
-
-        open: Number(item.open),
-        high: Number(item.high),
-        low: Number(item.low),
-        close: Number(item.close),
-
-        volume:
-          item.volume === undefined
-            ? null
-            : Number(item.volume)
-      }))
-      .filter(item =>
-        Number.isFinite(item.open) &&
-        Number.isFinite(item.high) &&
-        Number.isFinite(item.low) &&
-        Number.isFinite(item.close)
-      )
-      .reverse();
-
-
-  return candles;
+      volume:
+        item.volume === undefined
+          ? null
+          : Number(item.volume)
+    }))
+    .filter(item =>
+      Number.isFinite(item.open) &&
+      Number.isFinite(item.high) &&
+      Number.isFinite(item.low) &&
+      Number.isFinite(item.close)
+    )
+    .reverse();
 }
 
 
@@ -935,10 +786,8 @@ async function createSignal(
       candidate.initialR
     ).run();
 
-
   const signalId =
     result.meta?.last_row_id;
-
 
   if (signalId) {
 
@@ -956,7 +805,6 @@ async function createSignal(
       "Signal created"
     ).run();
   }
-
 
   return signalId;
 }
@@ -976,10 +824,8 @@ async function updateOpenSignals(env) {
       ORDER BY created_at ASC
     `).all();
 
-
   const signals =
     result.results || [];
-
 
   for (const signal of signals) {
 
@@ -993,19 +839,12 @@ async function updateOpenSignals(env) {
           5
         );
 
-
       if (!candles.length) {
         continue;
       }
 
-
       const price =
         candles[candles.length - 1].close;
-
-
-      // ------------------------------------------------------
-      // TP1
-      // ------------------------------------------------------
 
       if (
         signal.status === "ACTIVE" &&
@@ -1028,7 +867,6 @@ async function updateOpenSignals(env) {
           WHERE id = ?
         `).bind(signal.id).run();
 
-
         await env.DB.prepare(`
           INSERT INTO signal_events (
             signal_id,
@@ -1043,7 +881,6 @@ async function updateOpenSignals(env) {
           "TP1 reached; stop moved to breakeven"
         ).run();
 
-
         await sendTelegram(
           env,
           formatEvent(
@@ -1054,14 +891,8 @@ async function updateOpenSignals(env) {
           )
         );
 
-
         continue;
       }
-
-
-      // ------------------------------------------------------
-      // TP2
-      // ------------------------------------------------------
 
       if (
         (
@@ -1076,10 +907,7 @@ async function updateOpenSignals(env) {
       ) {
 
         const resultR =
-          signal.status === "TP1_HIT"
-            ? CONFIG.tp2R
-            : CONFIG.tp2R;
-
+          CONFIG.tp2R;
 
         await closeSignal(
           env,
@@ -1089,7 +917,6 @@ async function updateOpenSignals(env) {
           resultR,
           "TP2 reached"
         );
-
 
         await sendTelegram(
           env,
@@ -1101,14 +928,8 @@ async function updateOpenSignals(env) {
           )
         );
 
-
         continue;
       }
-
-
-      // ------------------------------------------------------
-      // STOP LOSS
-      // ------------------------------------------------------
 
       if (
         stopReached(
@@ -1118,17 +939,10 @@ async function updateOpenSignals(env) {
         )
       ) {
 
-        let resultR;
-
-
-        if (
+        const resultR =
           signal.breakeven_applied
-        ) {
-          resultR = 0;
-        } else {
-          resultR = -1;
-        }
-
+            ? 0
+            : -1;
 
         await closeSignal(
           env,
@@ -1140,7 +954,6 @@ async function updateOpenSignals(env) {
             ? "Breakeven stop hit"
             : "Stop loss hit"
         );
-
 
         await sendTelegram(
           env,
@@ -1196,7 +1009,6 @@ async function closeSignal(
     signal.id
   ).run();
 
-
   await env.DB.prepare(`
     INSERT INTO signal_events (
       signal_id,
@@ -1232,7 +1044,6 @@ async function hasOpenSignal(
       LIMIT 1
     `).bind(symbol).first();
 
-
   return Boolean(result);
 }
 
@@ -1256,21 +1067,17 @@ async function isInCooldown(
       direction
     ).first();
 
-
   if (!result) {
     return false;
   }
-
 
   const created =
     new Date(
       result.created_at
     ).getTime();
 
-
   const age =
     Date.now() - created;
-
 
   return (
     age <
@@ -1320,43 +1127,34 @@ function stopReached(
 async function setupTelegramChat(env) {
 
   if (!env.TELEGRAM_BOT_TOKEN) {
-
     return json({
       ok: false,
       error: "TELEGRAM_BOT_TOKEN is missing"
     }, 500);
   }
 
-
   const url =
     "https://api.telegram.org/bot" +
     env.TELEGRAM_BOT_TOKEN +
     "/getUpdates";
 
-
   const response =
     await fetch(url);
-
 
   const data =
     await response.json();
 
-
   if (!data.ok) {
-
     return json({
       ok: false,
       telegram: data
     }, 500);
   }
 
-
   const updates =
     data.result || [];
 
-
   let chatId = null;
-
 
   for (
     let i = updates.length - 1;
@@ -1380,7 +1178,6 @@ async function setupTelegramChat(env) {
     }
   }
 
-
   if (!chatId) {
 
     return json({
@@ -1390,18 +1187,15 @@ async function setupTelegramChat(env) {
     }, 400);
   }
 
-
   await saveChatId(
     env,
     chatId
   );
 
-
   await sendTelegram(
     env,
     "✅ اتصال موتور سیگنال فارکس برقرار شد.\n\nربات آماده دریافت سیگنال است."
   );
-
 
   return json({
     ok: true,
@@ -1429,7 +1223,6 @@ async function saveChatId(
       updated_at = CURRENT_TIMESTAMP
   `).bind(chatId).run();
 
-
   await env.DB.prepare(`
     INSERT INTO subscribers (
       chat_id,
@@ -1455,29 +1248,23 @@ async function telegramWebhook(
   const body =
     await request.json();
 
-
   const message =
     body?.message;
-
 
   const chatId =
     message?.chat?.id;
 
-
   if (chatId) {
-
     await saveChatId(
       env,
       String(chatId)
     );
   }
 
-
   const text =
     String(
       message?.text || ""
     ).trim();
-
 
   if (
     text === "/start" ||
@@ -1491,7 +1278,6 @@ async function telegramWebhook(
       "سیگنال‌ها پس از بررسی شرایط بازار ارسال می‌شوند."
     );
   }
-
 
   return json({
     ok: true
@@ -1512,7 +1298,6 @@ async function sendTelegram(
     return false;
   }
 
-
   const result =
     await env.DB.prepare(`
       SELECT value
@@ -1521,17 +1306,14 @@ async function sendTelegram(
       LIMIT 1
     `).first();
 
-
   if (!result?.value) {
     return false;
   }
-
 
   const url =
     "https://api.telegram.org/bot" +
     env.TELEGRAM_BOT_TOKEN +
     "/sendMessage";
-
 
   const response =
     await fetch(url, {
@@ -1549,7 +1331,6 @@ async function sendTelegram(
       })
     });
 
-
   return response.ok;
 }
 
@@ -1564,7 +1345,6 @@ function formatNewSignal(signal) {
     signal.direction === "LONG"
       ? "🟢"
       : "🔴";
-
 
   return (
     emoji +
@@ -1652,14 +1432,12 @@ async function getStats(env) {
       FROM signals
     `).first();
 
-
   const wins =
     await env.DB.prepare(`
       SELECT COUNT(*) AS value
       FROM signals
       WHERE result_r > 0
     `).first();
-
 
   const losses =
     await env.DB.prepare(`
@@ -1668,14 +1446,12 @@ async function getStats(env) {
       WHERE result_r < 0
     `).first();
 
-
   const closed =
     await env.DB.prepare(`
       SELECT COUNT(*) AS value
       FROM signals
       WHERE result_r IS NOT NULL
     `).first();
-
 
   const average =
     await env.DB.prepare(`
@@ -1684,14 +1460,12 @@ async function getStats(env) {
       WHERE result_r IS NOT NULL
     `).first();
 
-
   const sumR =
     await env.DB.prepare(`
       SELECT SUM(result_r) AS value
       FROM signals
       WHERE result_r IS NOT NULL
     `).first();
-
 
   const winRate =
     Number(closed?.value || 0) > 0
@@ -1700,7 +1474,6 @@ async function getStats(env) {
           Number(closed?.value || 1)
         ) * 100
       : 0;
-
 
   return json({
     ok: true,
@@ -1749,16 +1522,13 @@ function EMA(values, period) {
     new Array(values.length)
       .fill(null);
 
-
   if (
     values.length < period
   ) {
     return result;
   }
 
-
   let sum = 0;
-
 
   for (
     let i = 0;
@@ -1768,18 +1538,14 @@ function EMA(values, period) {
     sum += values[i];
   }
 
-
   let previous =
     sum / period;
-
 
   result[period - 1] =
     previous;
 
-
   const multiplier =
     2 / (period + 1);
-
 
   for (
     let i = period;
@@ -1795,11 +1561,9 @@ function EMA(values, period) {
       multiplier +
       previous;
 
-
     result[i] =
       previous;
   }
-
 
   return result;
 }
@@ -1811,17 +1575,14 @@ function RSI(values, period) {
     new Array(values.length)
       .fill(null);
 
-
   if (
     values.length <= period
   ) {
     return result;
   }
 
-
   let gain = 0;
   let loss = 0;
-
 
   for (
     let i = 1;
@@ -1833,7 +1594,6 @@ function RSI(values, period) {
       values[i] -
       values[i - 1];
 
-
     if (change > 0) {
       gain += change;
     } else {
@@ -1841,20 +1601,17 @@ function RSI(values, period) {
     }
   }
 
-
   let avgGain =
     gain / period;
 
   let avgLoss =
     loss / period;
 
-
   result[period] =
     rsiValue(
       avgGain,
       avgLoss
     );
-
 
   for (
     let i = period + 1;
@@ -1866,18 +1623,15 @@ function RSI(values, period) {
       values[i] -
       values[i - 1];
 
-
     const currentGain =
       change > 0
         ? change
         : 0;
 
-
     const currentLoss =
       change < 0
         ? -change
         : 0;
-
 
     avgGain =
       (
@@ -1887,7 +1641,6 @@ function RSI(values, period) {
       ) /
       period;
 
-
     avgLoss =
       (
         avgLoss *
@@ -1896,14 +1649,12 @@ function RSI(values, period) {
       ) /
       period;
 
-
     result[i] =
       rsiValue(
         avgGain,
         avgLoss
       );
   }
-
 
   return result;
 }
@@ -1920,11 +1671,9 @@ function rsiValue(
     return 100;
   }
 
-
   const rs =
     avgGain /
     avgLoss;
-
 
   return 100 -
     (
@@ -1942,11 +1691,9 @@ function MACD(values) {
   const ema26 =
     EMA(values, 26);
 
-
   const macd =
     new Array(values.length)
       .fill(null);
-
 
   for (
     let i = 0;
@@ -1965,24 +1712,19 @@ function MACD(values) {
     }
   }
 
-
   const clean =
     macd.filter(
       x => x !== null
     );
 
-
   const signalClean =
     EMA(clean, 9);
-
 
   const signal =
     new Array(values.length)
       .fill(null);
 
-
   let index = 0;
-
 
   for (
     let i = 0;
@@ -2001,7 +1743,6 @@ function MACD(values) {
     }
   }
 
-
   return {
     macd,
     signal
@@ -2018,7 +1759,6 @@ function ATR(
     new Array(candles.length)
       .fill(null);
 
-
   for (
     let i = 0;
     i < candles.length;
@@ -2034,7 +1774,6 @@ function ATR(
       continue;
     }
 
-
     const high =
       candles[i].high;
 
@@ -2043,7 +1782,6 @@ function ATR(
 
     const previousClose =
       candles[i - 1].close;
-
 
     tr[i] =
       Math.max(
@@ -2061,11 +1799,9 @@ function ATR(
       );
   }
 
-
   const result =
     new Array(candles.length)
       .fill(null);
-
 
   if (
     candles.length <= period
@@ -2073,27 +1809,21 @@ function ATR(
     return result;
   }
 
-
   let sum = 0;
-
 
   for (
     let i = 1;
     i <= period;
     i++
   ) {
-
     sum += tr[i];
   }
-
 
   let previous =
     sum / period;
 
-
   result[period] =
     previous;
-
 
   for (
     let i = period + 1;
@@ -2109,11 +1839,9 @@ function ATR(
       ) /
       period;
 
-
     result[i] =
       previous;
   }
-
 
   return result;
 }
@@ -2136,7 +1864,6 @@ function roundPrice(
     );
   }
 
-
   if (
     symbol === "USD/JPY"
   ) {
@@ -2144,7 +1871,6 @@ function roundPrice(
       value.toFixed(3)
     );
   }
-
 
   return Number(
     value.toFixed(5)
@@ -2165,13 +1891,11 @@ async function fetchWithTimeout(
   const controller =
     new AbortController();
 
-
   const timer =
     setTimeout(
       () => controller.abort(),
       timeout
     );
-
 
   try {
 
@@ -2347,4 +2071,4 @@ xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
 </url>
 
 </urlset>`;
-}
+        }
