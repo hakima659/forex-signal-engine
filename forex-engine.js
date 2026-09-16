@@ -15,11 +15,13 @@
 // Momentum
 // Breakout
 //
-// API:
+// Endpoints:
+// /
 // /health
 // /api/signals
 // /api/stats
 // /run
+// /telegram-test
 // ============================================================
 
 const CONFIG = {
@@ -49,6 +51,40 @@ const CONFIG = {
 };
 
 // ============================================================
+// SECRET HELPERS
+// ============================================================
+
+function getTelegramToken(env) {
+  return (
+    env.TELEGRAM_BOT_TOKEN ||
+    env["توکن_ربات_تلگرام"] ||
+    env.TELEGRAM_TOKEN ||
+    ""
+  );
+}
+
+function getTelegramChatId(env) {
+  return (
+    env.TELEGRAM_CHAT_ID ||
+    env["شناسه_چت_تلگرام"] ||
+    env["آیدی_چت_تلگرام"] ||
+    env["TELEGRAM_CHATID"] ||
+    env.TELEGRAM_CHATID ||
+    ""
+  );
+}
+
+function getTwelveDataKey(env) {
+  return (
+    env.TWELVE_DATA_API_KEY ||
+    env["کلید API دوازده داده"] ||
+    env["کلید_API_دوازده_داده"] ||
+    env.TWELVE_DATA_KEY ||
+    ""
+  );
+}
+
+// ============================================================
 // MAIN WORKER
 // ============================================================
 
@@ -62,13 +98,26 @@ export default {
         return corsResponse("", 204);
       }
 
+      // --------------------------------------------------------
+      // HEALTH
+      // --------------------------------------------------------
+
       if (path === "/" || path === "/health") {
+        const telegramToken = getTelegramToken(env);
+        const telegramChatId = getTelegramChatId(env);
+        const twelveKey = getTwelveDataKey(env);
+
         return jsonResponse({
           ok: true,
-          service: "Forex Signal Engine",
+
+          service: "موتور سیگنال فارکس",
+
           version: CONFIG.version,
-          focus: "XAU/USD",
+
+          focus: CONFIG.primarySymbol,
+
           analysis: "15M + 1H",
+
           indicators: [
             "EMA 20",
             "EMA 50",
@@ -80,13 +129,28 @@ export default {
             "Momentum",
             "Breakout"
           ],
+
+          connections: {
+            twelve_data: !!twelveKey,
+
+            telegram: !!(
+              telegramToken &&
+              telegramChatId
+            )
+          },
+
           telegram: !!(
-            env.TELEGRAM_BOT_TOKEN &&
-            env.TELEGRAM_CHAT_ID
+            telegramToken &&
+            telegramChatId
           ),
+
           timestamp: new Date().toISOString()
         });
       }
+
+      // --------------------------------------------------------
+      // SIGNALS
+      // --------------------------------------------------------
 
       if (path === "/api/signals") {
         const signals = await generateAllSignals(env);
@@ -94,15 +158,26 @@ export default {
         return jsonResponse({
           ok: true,
           version: CONFIG.version,
+          focus: CONFIG.primarySymbol,
           count: signals.length,
           signals,
           timestamp: new Date().toISOString()
         });
       }
 
+      // --------------------------------------------------------
+      // STATS
+      // --------------------------------------------------------
+
       if (path === "/api/stats") {
-        return jsonResponse(await getStats(env));
+        return jsonResponse(
+          await getStats(env)
+        );
       }
+
+      // --------------------------------------------------------
+      // MANUAL RUN
+      // --------------------------------------------------------
 
       if (path === "/run") {
         const result = await runEngine(env);
@@ -110,31 +185,70 @@ export default {
         return jsonResponse(result);
       }
 
-      return jsonResponse({
-        ok: false,
-        error: "Not Found",
-        endpoints: [
-          "/health",
-          "/api/signals",
-          "/api/stats",
-          "/run"
-        ]
-      }, 404);
+      // --------------------------------------------------------
+      // TELEGRAM TEST
+      // --------------------------------------------------------
+
+      if (path === "/telegram-test") {
+        const result = await testTelegram(env);
+
+        return jsonResponse(result);
+      }
+
+      // --------------------------------------------------------
+      // 404
+      // --------------------------------------------------------
+
+      return jsonResponse(
+        {
+          ok: false,
+          error: "Not Found",
+          endpoints: [
+            "/health",
+            "/api/signals",
+            "/api/stats",
+            "/run",
+            "/telegram-test"
+          ]
+        },
+        404
+      );
 
     } catch (error) {
-      console.error("ENGINE ERROR:", error);
+      console.error(
+        "ENGINE ERROR:",
+        error
+      );
 
-      return jsonResponse({
-        ok: false,
-        version: CONFIG.version,
-        error: error?.message || String(error),
-        timestamp: new Date().toISOString()
-      }, 500);
+      return jsonResponse(
+        {
+          ok: false,
+          version: CONFIG.version,
+          error:
+            error?.message ||
+            String(error),
+          timestamp:
+            new Date().toISOString()
+        },
+        500
+      );
     }
   },
 
+  // ==========================================================
+  // CRON
+  // ==========================================================
+
   async scheduled(event, env, ctx) {
-    ctx.waitUntil(runEngine(env));
+    ctx.waitUntil(
+      runEngine(env)
+        .catch(error => {
+          console.error(
+            "SCHEDULED ENGINE ERROR:",
+            error
+          );
+        })
+    );
   }
 };
 
@@ -145,35 +259,59 @@ export default {
 async function runEngine(env) {
   const startedAt = Date.now();
 
-  const signals = await generateAllSignals(env);
+  const signals =
+    await generateAllSignals(env);
 
   const sent = [];
 
   // XAU/USD همیشه اول
   for (const signal of signals) {
+
+    // طلا همیشه پردازش شود
+    // سایر نمادها فقط BUY/SELL
     if (
-      signal.symbol === CONFIG.primarySymbol ||
+      signal.symbol ===
+        CONFIG.primarySymbol ||
       signal.signal !== "WAIT"
     ) {
-      const result = await processSignal(signal, env);
+
+      const result =
+        await processSignal(
+          signal,
+          env
+        );
 
       sent.push({
         symbol: signal.symbol,
         signal: signal.signal,
-        telegram: result.telegram
+        score: signal.score,
+        telegram: result.telegram,
+        reason: result.reason || null
       });
     }
   }
 
   return {
     ok: true,
+
     version: CONFIG.version,
-    priority: CONFIG.primarySymbol,
-    generated: signals.length,
+
+    priority:
+      CONFIG.primarySymbol,
+
+    generated:
+      signals.length,
+
     signals,
+
     delivery: sent,
-    execution_ms: Date.now() - startedAt,
-    timestamp: new Date().toISOString()
+
+    execution_ms:
+      Date.now() -
+      startedAt,
+
+    timestamp:
+      new Date().toISOString()
   };
 }
 
@@ -184,25 +322,50 @@ async function runEngine(env) {
 async function generateAllSignals(env) {
   const results = [];
 
-  // طلا حتماً اول
   const orderedSymbols = [
     CONFIG.primarySymbol,
+
     ...CONFIG.symbols.filter(
-      s => s !== CONFIG.primarySymbol
+      symbol =>
+        symbol !==
+        CONFIG.primarySymbol
     )
   ];
 
   for (const symbol of orderedSymbols) {
+
     try {
-      const signal = await analyzeSymbol(symbol, env);
+
+      const signal =
+        await analyzeSymbol(
+          symbol,
+          env
+        );
+
       results.push(signal);
+
     } catch (error) {
+
+      console.error(
+        `ANALYSIS ERROR ${symbol}:`,
+        error
+      );
+
       results.push({
         ok: false,
+
         symbol,
+
         signal: "WAIT",
-        error: error?.message || String(error),
-        timestamp: new Date().toISOString()
+
+        score: 0,
+
+        error:
+          error?.message ||
+          String(error),
+
+        timestamp:
+          new Date().toISOString()
       });
     }
   }
@@ -214,74 +377,110 @@ async function generateAllSignals(env) {
 // ANALYZE SYMBOL
 // ============================================================
 
-async function analyzeSymbol(symbol, env) {
-  const candles15m = await getCandles(
-    symbol,
-    CONFIG.interval,
-    CONFIG.outputsize15m,
-    env
-  );
+async function analyzeSymbol(
+  symbol,
+  env
+) {
+  const candles15m =
+    await getCandles(
+      symbol,
+      CONFIG.interval,
+      CONFIG.outputsize15m,
+      env
+    );
 
-  const candles1h = await getCandles(
-    symbol,
-    CONFIG.confirmationInterval,
-    CONFIG.outputsize1h,
-    env
-  );
+  const candles1h =
+    await getCandles(
+      symbol,
+      CONFIG.confirmationInterval,
+      CONFIG.outputsize1h,
+      env
+    );
 
   if (candles15m.length < 220) {
     throw new Error(
-      `${symbol}: insufficient 15M candles`
+      `${symbol}: insufficient 15M candles (${candles15m.length})`
     );
   }
 
   if (candles1h.length < 220) {
     throw new Error(
-      `${symbol}: insufficient 1H candles`
+      `${symbol}: insufficient 1H candles (${candles1h.length})`
     );
   }
 
-  const indicators15m = calculateIndicators(candles15m);
-  const indicators1h = calculateIndicators(candles1h);
+  const indicators15m =
+    calculateIndicators(
+      candles15m
+    );
 
-  const trend15m = determineTrend(indicators15m);
-  const trend1h = determineTrend(indicators1h);
+  const indicators1h =
+    calculateIndicators(
+      candles1h
+    );
 
-  const momentum15m = calculateMomentum(candles15m);
-  const breakout15m = calculateBreakout(candles15m);
+  const trend15m =
+    determineTrend(
+      indicators15m
+    );
 
-  const score = calculateSignalScore({
-    indicators15m,
-    indicators1h,
-    trend15m,
-    trend1h,
-    momentum15m,
-    breakout15m
-  });
+  const trend1h =
+    determineTrend(
+      indicators1h
+    );
 
-  const signal = scoreToSignal(
-    score,
-    trend15m,
-    trend1h
-  );
+  const momentum15m =
+    calculateMomentum(
+      candles15m
+    );
 
-  const strength = getStrength(score);
+  const breakout15m =
+    calculateBreakout(
+      candles15m
+    );
 
-  const last = candles15m[candles15m.length - 1];
+  const score =
+    calculateSignalScore({
+      indicators15m,
+      indicators1h,
+      trend15m,
+      trend1h,
+      momentum15m,
+      breakout15m
+    });
+
+  const signal =
+    scoreToSignal(
+      score,
+      trend15m,
+      trend1h
+    );
+
+  const strength =
+    getStrength(score);
+
+  const last =
+    candles15m[
+      candles15m.length - 1
+    ];
 
   return {
     ok: true,
 
-    version: CONFIG.version,
+    version:
+      CONFIG.version,
 
     symbol,
 
     priority:
-      symbol === CONFIG.primarySymbol,
+      symbol ===
+      CONFIG.primarySymbol,
 
-    timeframe: "15min",
+    timeframe:
+      CONFIG.interval,
 
-    confirmation_timeframe: "1h",
+    confirmation_timeframe:
+      CONFIG.confirmationInterval,
 
     signal,
 
@@ -289,53 +488,132 @@ async function analyzeSymbol(symbol, env) {
 
     score,
 
-    price: round(last.close, 5),
+    price:
+      round(
+        last.close,
+        5
+      ),
 
-    trend_15m: trend15m,
+    trend_15m:
+      trend15m,
 
-    trend_1h: trend1h,
+    trend_1h:
+      trend1h,
 
     indicators: {
-      ema20_15m: round(indicators15m.ema20),
-      ema50_15m: round(indicators15m.ema50),
-      ema200_15m: round(indicators15m.ema200),
 
-      ema20_1h: round(indicators1h.ema20),
-      ema50_1h: round(indicators1h.ema50),
-      ema200_1h: round(indicators1h.ema200),
+      ema20_15m:
+        round(
+          indicators15m.ema20
+        ),
 
-      rsi14: round(indicators15m.rsi),
+      ema50_15m:
+        round(
+          indicators15m.ema50
+        ),
 
-      macd: round(indicators15m.macd),
-      macd_signal: round(indicators15m.macdSignal),
-      macd_histogram: round(indicators15m.macdHistogram),
+      ema200_15m:
+        round(
+          indicators15m.ema200
+        ),
 
-      atr14: round(indicators15m.atr),
+      ema20_1h:
+        round(
+          indicators1h.ema20
+        ),
 
-      adx14: round(indicators15m.adx),
+      ema50_1h:
+        round(
+          indicators1h.ema50
+        ),
 
-      momentum: round(momentum15m),
+      ema200_1h:
+        round(
+          indicators1h.ema200
+        ),
 
-      breakout: breakout15m.type
+      rsi14:
+        round(
+          indicators15m.rsi
+        ),
+
+      macd:
+        round(
+          indicators15m.macd
+        ),
+
+      macd_signal:
+        round(
+          indicators15m.macdSignal
+        ),
+
+      macd_histogram:
+        round(
+          indicators15m.macdHistogram
+        ),
+
+      atr14:
+        round(
+          indicators15m.atr
+        ),
+
+      adx14:
+        round(
+          indicators15m.adx
+        ),
+
+      plusDI:
+        round(
+          indicators15m.plusDI
+        ),
+
+      minusDI:
+        round(
+          indicators15m.minusDI
+        ),
+
+      momentum:
+        round(
+          momentum15m,
+          4
+        ),
+
+      breakout:
+        breakout15m.type
     },
 
     analysis: {
-      ema: indicators15m.emaStatus,
-      rsi: indicators15m.rsiStatus,
-      macd: indicators15m.macdStatus,
-      adx: indicators15m.adxStatus,
+
+      ema:
+        indicators15m.emaStatus,
+
+      rsi:
+        indicators15m.rsiStatus,
+
+      macd:
+        indicators15m.macdStatus,
+
+      adx:
+        indicators15m.adxStatus,
+
       momentum:
-        momentum15m > 0 ? "BULLISH" :
-        momentum15m < 0 ? "BEARISH" :
-        "NEUTRAL",
-      breakout: breakout15m.type,
+        momentum15m > 0
+          ? "BULLISH"
+          : momentum15m < 0
+            ? "BEARISH"
+            : "NEUTRAL",
+
+      breakout:
+        breakout15m.type,
+
       multi_timeframe:
         trend1h === trend15m
           ? "CONFIRMED"
           : "MIXED"
     },
 
-    timestamp: new Date().toISOString()
+    timestamp:
+      new Date().toISOString()
   };
 }
 
@@ -349,7 +627,10 @@ async function getCandles(
   outputsize,
   env
 ) {
-  if (!env.TWELVE_DATA_API_KEY) {
+  const apiKey =
+    getTwelveDataKey(env);
+
+  if (!apiKey) {
     throw new Error(
       "TWELVE_DATA_API_KEY is missing"
     );
@@ -361,9 +642,10 @@ async function getCandles(
     `&interval=${encodeURIComponent(interval)}` +
     `&outputsize=${outputsize}` +
     "&format=JSON" +
-    `&apikey=${encodeURIComponent(env.TWELVE_DATA_API_KEY)}`;
+    `&apikey=${encodeURIComponent(apiKey)}`;
 
-  const response = await fetch(url);
+  const response =
+    await fetch(url);
 
   if (!response.ok) {
     throw new Error(
@@ -371,15 +653,23 @@ async function getCandles(
     );
   }
 
-  const data = await response.json();
+  const data =
+    await response.json();
 
-  if (data.status === "error") {
+  if (
+    data.status === "error"
+  ) {
     throw new Error(
-      data.message || "Twelve Data error"
+      data.message ||
+      "Twelve Data error"
     );
   }
 
-  if (!Array.isArray(data.values)) {
+  if (
+    !Array.isArray(
+      data.values
+    )
+  ) {
     throw new Error(
       `No candle data for ${symbol} ${interval}`
     );
@@ -387,12 +677,25 @@ async function getCandles(
 
   return data.values
     .map(x => ({
-      datetime: x.datetime,
-      open: Number(x.open),
-      high: Number(x.high),
-      low: Number(x.low),
-      close: Number(x.close),
-      volume: Number(x.volume || 0)
+      datetime:
+        x.datetime,
+
+      open:
+        Number(x.open),
+
+      high:
+        Number(x.high),
+
+      low:
+        Number(x.low),
+
+      close:
+        Number(x.close),
+
+      volume:
+        Number(
+          x.volume || 0
+        )
     }))
     .filter(x =>
       Number.isFinite(x.open) &&
@@ -407,89 +710,143 @@ async function getCandles(
 // INDICATORS
 // ============================================================
 
-function calculateIndicators(candles) {
-  const closes = candles.map(x => x.close);
-  const highs = candles.map(x => x.high);
-  const lows = candles.map(x => x.low);
+function calculateIndicators(
+  candles
+) {
+  const closes =
+    candles.map(
+      x => x.close
+    );
 
-  const ema20 = EMA(closes, 20);
-  const ema50 = EMA(closes, 50);
-  const ema200 = EMA(closes, 200);
+  const highs =
+    candles.map(
+      x => x.high
+    );
 
-  const rsi = RSI(closes, 14);
+  const lows =
+    candles.map(
+      x => x.low
+    );
 
-  const macdData = MACD(
-    closes,
-    12,
-    26,
-    9
-  );
+  const ema20 =
+    EMA(closes, 20);
 
-  const atr = ATR(
-    highs,
-    lows,
-    closes,
-    14
-  );
+  const ema50 =
+    EMA(closes, 50);
 
-  const adxData = ADX(
-    highs,
-    lows,
-    closes,
-    14
-  );
+  const ema200 =
+    EMA(closes, 200);
+
+  const rsi =
+    RSI(closes, 14);
+
+  const macdData =
+    MACD(
+      closes,
+      12,
+      26,
+      9
+    );
+
+  const atr =
+    ATR(
+      highs,
+      lows,
+      closes,
+      14
+    );
+
+  const adxData =
+    ADX(
+      highs,
+      lows,
+      closes,
+      14
+    );
 
   const lastClose =
-    closes[closes.length - 1];
+    closes[
+      closes.length - 1
+    ];
 
-  let emaStatus = "NEUTRAL";
+  let emaStatus =
+    "NEUTRAL";
 
   if (
     lastClose > ema20 &&
     ema20 > ema50 &&
     ema50 > ema200
   ) {
-    emaStatus = "BULLISH";
+    emaStatus =
+      "BULLISH";
   } else if (
     lastClose < ema20 &&
     ema20 < ema50 &&
     ema50 < ema200
   ) {
-    emaStatus = "BEARISH";
+    emaStatus =
+      "BEARISH";
   }
 
-  let rsiStatus = "NEUTRAL";
-
-  if (rsi >= 55 && rsi <= 70) {
-    rsiStatus = "BULLISH";
-  } else if (rsi <= 45 && rsi >= 30) {
-    rsiStatus = "BEARISH";
-  } else if (rsi > 70) {
-    rsiStatus = "OVERBOUGHT";
-  } else if (rsi < 30) {
-    rsiStatus = "OVERSOLD";
-  }
-
-  let macdStatus = "NEUTRAL";
+  let rsiStatus =
+    "NEUTRAL";
 
   if (
-    macdData.macd > macdData.signal &&
-    macdData.histogram > 0
+    rsi >= 55 &&
+    rsi <= 70
   ) {
-    macdStatus = "BULLISH";
+    rsiStatus =
+      "BULLISH";
   } else if (
-    macdData.macd < macdData.signal &&
-    macdData.histogram < 0
+    rsi <= 45 &&
+    rsi >= 30
   ) {
-    macdStatus = "BEARISH";
+    rsiStatus =
+      "BEARISH";
+  } else if (
+    rsi > 70
+  ) {
+    rsiStatus =
+      "OVERBOUGHT";
+  } else if (
+    rsi < 30
+  ) {
+    rsiStatus =
+      "OVERSOLD";
   }
 
-  let adxStatus = "WEAK";
+  let macdStatus =
+    "NEUTRAL";
 
-  if (adxData.adx >= 25) {
-    adxStatus = "STRONG";
-  } else if (adxData.adx >= 20) {
-    adxStatus = "MODERATE";
+  if (
+    macdData.macd >
+      macdData.signal &&
+    macdData.histogram > 0
+  ) {
+    macdStatus =
+      "BULLISH";
+  } else if (
+    macdData.macd <
+      macdData.signal &&
+    macdData.histogram < 0
+  ) {
+    macdStatus =
+      "BEARISH";
+  }
+
+  let adxStatus =
+    "WEAK";
+
+  if (
+    adxData.adx >= 25
+  ) {
+    adxStatus =
+      "STRONG";
+  } else if (
+    adxData.adx >= 20
+  ) {
+    adxStatus =
+      "MODERATE";
   }
 
   return {
@@ -499,15 +856,25 @@ function calculateIndicators(candles) {
 
     rsi,
 
-    macd: macdData.macd,
-    macdSignal: macdData.signal,
-    macdHistogram: macdData.histogram,
+    macd:
+      macdData.macd,
+
+    macdSignal:
+      macdData.signal,
+
+    macdHistogram:
+      macdData.histogram,
 
     atr,
 
-    adx: adxData.adx,
-    plusDI: adxData.plusDI,
-    minusDI: adxData.minusDI,
+    adx:
+      adxData.adx,
+
+    plusDI:
+      adxData.plusDI,
+
+    minusDI:
+      adxData.minusDI,
 
     emaStatus,
     rsiStatus,
@@ -520,18 +887,35 @@ function calculateIndicators(candles) {
 // EMA
 // ============================================================
 
-function EMA(values, period) {
-  if (values.length < period) {
-    return values[values.length - 1];
+function EMA(
+  values,
+  period
+) {
+  if (
+    values.length < period
+  ) {
+    return (
+      values[
+        values.length - 1
+      ] || 0
+    );
   }
 
   const multiplier =
-    2 / (period + 1);
+    2 /
+    (period + 1);
 
   let ema =
     values
-      .slice(0, period)
-      .reduce((a, b) => a + b, 0) /
+      .slice(
+        0,
+        period
+      )
+      .reduce(
+        (a, b) =>
+          a + b,
+        0
+      ) /
     period;
 
   for (
@@ -541,7 +925,7 @@ function EMA(values, period) {
   ) {
     ema =
       (values[i] - ema) *
-      multiplier +
+        multiplier +
       ema;
   }
 
@@ -552,27 +936,41 @@ function EMA(values, period) {
 // RSI
 // ============================================================
 
-function RSI(values, period = 14) {
-  if (values.length <= period) {
+function RSI(
+  values,
+  period = 14
+) {
+  if (
+    values.length <= period
+  ) {
     return 50;
   }
 
   let gains = 0;
   let losses = 0;
 
-  for (let i = 1; i <= period; i++) {
+  for (
+    let i = 1;
+    i <= period;
+    i++
+  ) {
     const diff =
-      values[i] - values[i - 1];
+      values[i] -
+      values[i - 1];
 
     if (diff >= 0) {
       gains += diff;
     } else {
-      losses += Math.abs(diff);
+      losses +=
+        Math.abs(diff);
     }
   }
 
-  let avgGain = gains / period;
-  let avgLoss = losses / period;
+  let avgGain =
+    gains / period;
+
+  let avgLoss =
+    losses / period;
 
   for (
     let i = period + 1;
@@ -580,31 +978,51 @@ function RSI(values, period = 14) {
     i++
   ) {
     const diff =
-      values[i] - values[i - 1];
+      values[i] -
+      values[i - 1];
 
     const gain =
-      diff > 0 ? diff : 0;
+      diff > 0
+        ? diff
+        : 0;
 
     const loss =
-      diff < 0 ? Math.abs(diff) : 0;
+      diff < 0
+        ? Math.abs(diff)
+        : 0;
 
     avgGain =
-      ((avgGain * (period - 1)) + gain) /
+      (
+        avgGain *
+          (period - 1) +
+        gain
+      ) /
       period;
 
     avgLoss =
-      ((avgLoss * (period - 1)) + loss) /
+      (
+        avgLoss *
+          (period - 1) +
+        loss
+      ) /
       period;
   }
 
-  if (avgLoss === 0) {
+  if (
+    avgLoss === 0
+  ) {
     return 100;
   }
 
   const rs =
-    avgGain / avgLoss;
+    avgGain /
+    avgLoss;
 
-  return 100 - 100 / (1 + rs);
+  return (
+    100 -
+    100 /
+      (1 + rs)
+  );
 }
 
 // ============================================================
@@ -617,12 +1035,21 @@ function MACD(
   slowPeriod = 26,
   signalPeriod = 9
 ) {
-  const fast = EMA(values, fastPeriod);
-  const slow = EMA(values, slowPeriod);
+  const fast =
+    EMA(
+      values,
+      fastPeriod
+    );
 
-  const macd = fast - slow;
+  const slow =
+    EMA(
+      values,
+      slowPeriod
+    );
 
-  // Approximate signal line from MACD series
+  const macd =
+    fast - slow;
+
   const macdSeries = [];
 
   for (
@@ -631,26 +1058,44 @@ function MACD(
     i++
   ) {
     const subset =
-      values.slice(0, i);
+      values.slice(
+        0,
+        i
+      );
 
     const f =
-      EMA(subset, fastPeriod);
+      EMA(
+        subset,
+        fastPeriod
+      );
 
     const s =
-      EMA(subset, slowPeriod);
+      EMA(
+        subset,
+        slowPeriod
+      );
 
-    macdSeries.push(f - s);
+    macdSeries.push(
+      f - s
+    );
   }
 
   const signal =
-    macdSeries.length >= signalPeriod
-      ? EMA(macdSeries, signalPeriod)
+    macdSeries.length >=
+    signalPeriod
+      ? EMA(
+          macdSeries,
+          signalPeriod
+        )
       : macd;
 
   return {
     macd,
+
     signal,
-    histogram: macd - signal
+
+    histogram:
+      macd - signal
   };
 }
 
@@ -666,28 +1111,47 @@ function ATR(
 ) {
   const trs = [];
 
-  for (let i = 1; i < closes.length; i++) {
-    const tr = Math.max(
-      highs[i] - lows[i],
-      Math.abs(
-        highs[i] - closes[i - 1]
-      ),
-      Math.abs(
-        lows[i] - closes[i - 1]
-      )
-    );
+  for (
+    let i = 1;
+    i < closes.length;
+    i++
+  ) {
+    const tr =
+      Math.max(
+        highs[i] -
+          lows[i],
+
+        Math.abs(
+          highs[i] -
+            closes[i - 1]
+        ),
+
+        Math.abs(
+          lows[i] -
+            closes[i - 1]
+        )
+      );
 
     trs.push(tr);
   }
 
-  if (trs.length < period) {
+  if (
+    trs.length < period
+  ) {
     return 0;
   }
 
   let atr =
     trs
-      .slice(0, period)
-      .reduce((a, b) => a + b, 0) /
+      .slice(
+        0,
+        period
+      )
+      .reduce(
+        (a, b) =>
+          a + b,
+        0
+      ) /
     period;
 
   for (
@@ -696,7 +1160,11 @@ function ATR(
     i++
   ) {
     atr =
-      ((atr * (period - 1)) + trs[i]) /
+      (
+        atr *
+          (period - 1) +
+        trs[i]
+      ) /
       period;
   }
 
@@ -717,40 +1185,58 @@ function ADX(
   const plusDM = [];
   const minusDM = [];
 
-  for (let i = 1; i < closes.length; i++) {
+  for (
+    let i = 1;
+    i < closes.length;
+    i++
+  ) {
     const up =
-      highs[i] - highs[i - 1];
+      highs[i] -
+      highs[i - 1];
 
     const down =
-      lows[i - 1] - lows[i];
+      lows[i - 1] -
+      lows[i];
 
     const trueRange =
       Math.max(
-        highs[i] - lows[i],
+        highs[i] -
+          lows[i],
+
         Math.abs(
-          highs[i] - closes[i - 1]
+          highs[i] -
+            closes[i - 1]
         ),
+
         Math.abs(
-          lows[i] - closes[i - 1]
+          lows[i] -
+            closes[i - 1]
         )
       );
 
-    tr.push(trueRange);
+    tr.push(
+      trueRange
+    );
 
     plusDM.push(
-      up > down && up > 0
+      up > down &&
+      up > 0
         ? up
         : 0
     );
 
     minusDM.push(
-      down > up && down > 0
+      down > up &&
+      down > 0
         ? down
         : 0
     );
   }
 
-  if (tr.length < period * 2) {
+  if (
+    tr.length <
+    period * 2
+  ) {
     return {
       adx: 0,
       plusDI: 0,
@@ -759,32 +1245,63 @@ function ADX(
   }
 
   let atr =
-    average(tr.slice(0, period));
+    average(
+      tr.slice(
+        0,
+        period
+      )
+    );
 
   let plus =
-    average(plusDM.slice(0, period));
+    average(
+      plusDM.slice(
+        0,
+        period
+      )
+    );
 
   let minus =
-    average(minusDM.slice(0, period));
+    average(
+      minusDM.slice(
+        0,
+        period
+      )
+    );
 
   const dxValues = [];
 
   let plusDI =
-    atr === 0 ? 0 : 100 * plus / atr;
+    atr === 0
+      ? 0
+      : 100 *
+        plus /
+        atr;
 
   let minusDI =
-    atr === 0 ? 0 : 100 * minus / atr;
+    atr === 0
+      ? 0
+      : 100 *
+        minus /
+        atr;
 
   let dx =
-    plusDI + minusDI === 0
+    plusDI +
+      minusDI ===
+    0
       ? 0
       : 100 *
         Math.abs(
-          plusDI - minusDI
+          plusDI -
+            minusDI
         ) /
-        (plusDI + minusDI);
+        (
+          plusDI +
+          minusDI
+        );
 
-  dxValues.push(dx);
+  dxValues.push(
+    dx
+  );
 
   for (
     let i = period;
@@ -792,46 +1309,71 @@ function ADX(
     i++
   ) {
     atr =
-      ((atr * (period - 1)) + tr[i]) /
+      (
+        atr *
+          (period - 1) +
+        tr[i]
+      ) /
       period;
 
     plus =
-      ((plus * (period - 1)) +
-        plusDM[i]) /
+      (
+        plus *
+          (period - 1) +
+        plusDM[i]
+      ) /
       period;
 
     minus =
-      ((minus * (period - 1)) +
-        minusDM[i]) /
+      (
+        minus *
+          (period - 1) +
+        minusDM[i]
+      ) /
       period;
 
     plusDI =
       atr === 0
         ? 0
-        : 100 * plus / atr;
+        : 100 *
+          plus /
+          atr;
 
     minusDI =
       atr === 0
         ? 0
-        : 100 * minus / atr;
+        : 100 *
+          minus /
+          atr;
 
     dx =
-      plusDI + minusDI === 0
+      plusDI +
+        minusDI ===
+      0
         ? 0
         : 100 *
           Math.abs(
-            plusDI - minusDI
+            plusDI -
+              minusDI
           ) /
-          (plusDI + minusDI);
+          (
+            plusDI +
+            minusDI
+          );
 
-    dxValues.push(dx);
+    dxValues.push(
+      dx
+    );
   }
 
   let adx =
     average(
       dxValues.slice(
         0,
-        Math.min(period, dxValues.length)
+        Math.min(
+          period,
+          dxValues.length
+        )
       )
     );
 
@@ -841,14 +1383,19 @@ function ADX(
     i++
   ) {
     adx =
-      ((adx * (period - 1)) +
-        dxValues[i]) /
+      (
+        adx *
+          (period - 1) +
+        dxValues[i]
+      ) /
       period;
   }
 
   return {
     adx,
+
     plusDI,
+
     minusDI
   };
 }
@@ -857,27 +1404,44 @@ function ADX(
 // MOMENTUM
 // ============================================================
 
-function calculateMomentum(candles) {
+function calculateMomentum(
+  candles
+) {
   const closes =
-    candles.map(x => x.close);
+    candles.map(
+      x => x.close
+    );
 
-  if (closes.length < 11) {
+  if (
+    closes.length < 11
+  ) {
     return 0;
   }
 
   const current =
-    closes[closes.length - 1];
+    closes[
+      closes.length - 1
+    ];
 
   const previous =
-    closes[closes.length - 11];
+    closes[
+      closes.length - 11
+    ];
 
-  if (previous === 0) {
+  if (
+    previous === 0
+  ) {
     return 0;
   }
 
   return (
-    ((current - previous) /
-      previous) *
+    (
+      (
+        current -
+        previous
+      ) /
+      previous
+    ) *
     100
   );
 }
@@ -886,52 +1450,82 @@ function calculateMomentum(candles) {
 // BREAKOUT
 // ============================================================
 
-function calculateBreakout(candles) {
+function calculateBreakout(
+  candles
+) {
   const lookback = 20;
 
-  if (candles.length <= lookback) {
+  if (
+    candles.length <=
+    lookback
+  ) {
     return {
       type: "NONE"
     };
   }
 
   const last =
-    candles[candles.length - 1];
+    candles[
+      candles.length - 1
+    ];
 
   const previous =
     candles.slice(
-      candles.length - lookback - 1,
+      candles.length -
+        lookback -
+        1,
+
       candles.length - 1
     );
 
   const highest =
     Math.max(
-      ...previous.map(x => x.high)
+      ...previous.map(
+        x => x.high
+      )
     );
 
   const lowest =
     Math.min(
-      ...previous.map(x => x.low)
+      ...previous.map(
+        x => x.low
+      )
     );
 
-  if (last.close > highest) {
+  if (
+    last.close >
+    highest
+  ) {
     return {
-      type: "BULLISH_BREAKOUT",
-      level: highest
+      type:
+        "BULLISH_BREAKOUT",
+
+      level:
+        highest
     };
   }
 
-  if (last.close < lowest) {
+  if (
+    last.close <
+    lowest
+  ) {
     return {
-      type: "BEARISH_BREAKOUT",
-      level: lowest
+      type:
+        "BEARISH_BREAKOUT",
+
+      level:
+        lowest
     };
   }
 
   return {
     type: "NONE",
-    resistance: highest,
-    support: lowest
+
+    resistance:
+      highest,
+
+    support:
+      lowest
   };
 }
 
@@ -939,32 +1533,44 @@ function calculateBreakout(candles) {
 // TREND
 // ============================================================
 
-function determineTrend(indicators) {
+function determineTrend(
+  indicators
+) {
   const bullish =
     indicators.ema20 >
       indicators.ema50 &&
+
     indicators.ema50 >
       indicators.ema200 &&
+
     indicators.macd >
       indicators.macdSignal &&
+
     indicators.plusDI >
       indicators.minusDI;
 
   const bearish =
     indicators.ema20 <
       indicators.ema50 &&
+
     indicators.ema50 <
       indicators.ema200 &&
+
     indicators.macd <
       indicators.macdSignal &&
+
     indicators.minusDI >
       indicators.plusDI;
 
-  if (bullish) {
+  if (
+    bullish
+  ) {
     return "BULLISH";
   }
 
-  if (bearish) {
+  if (
+    bearish
+  ) {
     return "BEARISH";
   }
 
@@ -986,10 +1592,7 @@ function calculateSignalScore({
   let bullish = 0;
   let bearish = 0;
 
-  // ----------------------------------------------------------
   // EMA 15M
-  // ----------------------------------------------------------
-
   if (
     indicators15m.ema20 >
     indicators15m.ema50
@@ -1018,22 +1621,20 @@ function calculateSignalScore({
     bearish += 10;
   }
 
-  // ----------------------------------------------------------
-  // EMA 1H confirmation
-  // ----------------------------------------------------------
-
-  if (trend1h === "BULLISH") {
+  // EMA / trend 1H
+  if (
+    trend1h === "BULLISH"
+  ) {
     bullish += 20;
   }
 
-  if (trend1h === "BEARISH") {
+  if (
+    trend1h === "BEARISH"
+  ) {
     bearish += 20;
   }
 
-  // ----------------------------------------------------------
   // RSI
-  // ----------------------------------------------------------
-
   if (
     indicators15m.rsi >= 50 &&
     indicators15m.rsi <= 70
@@ -1048,10 +1649,7 @@ function calculateSignalScore({
     bearish += 10;
   }
 
-  // ----------------------------------------------------------
   // MACD
-  // ----------------------------------------------------------
-
   if (
     indicators15m.macd >
     indicators15m.macdSignal
@@ -1066,11 +1664,11 @@ function calculateSignalScore({
     bearish += 10;
   }
 
-  // ----------------------------------------------------------
-  // ADX / directional movement
-  // ----------------------------------------------------------
+  // ADX
+  if (
+    indicators15m.adx >= 25
+  ) {
 
-  if (indicators15m.adx >= 25) {
     if (
       indicators15m.plusDI >
       indicators15m.minusDI
@@ -1086,22 +1684,20 @@ function calculateSignalScore({
     }
   }
 
-  // ----------------------------------------------------------
   // Momentum
-  // ----------------------------------------------------------
-
-  if (momentum15m > 0) {
+  if (
+    momentum15m > 0
+  ) {
     bullish += 5;
   }
 
-  if (momentum15m < 0) {
+  if (
+    momentum15m < 0
+  ) {
     bearish += 5;
   }
 
-  // ----------------------------------------------------------
   // Breakout
-  // ----------------------------------------------------------
-
   if (
     breakout15m.type ===
     "BULLISH_BREAKOUT"
@@ -1116,27 +1712,25 @@ function calculateSignalScore({
     bearish += 15;
   }
 
-  // ----------------------------------------------------------
-  // 15M trend confirmation
-  // ----------------------------------------------------------
-
-  if (trend15m === "BULLISH") {
+  // 15M trend
+  if (
+    trend15m === "BULLISH"
+  ) {
     bullish += 5;
   }
 
-  if (trend15m === "BEARISH") {
+  if (
+    trend15m === "BEARISH"
+  ) {
     bearish += 5;
   }
 
-  const total =
+  return Math.min(
+    100,
     Math.max(
       bullish,
       bearish
-    );
-
-  return Math.min(
-    100,
-    total
+    )
   );
 }
 
@@ -1149,7 +1743,7 @@ function scoreToSignal(
   trend15m,
   trend1h
 ) {
-  // اختلاف شدید تایم‌فریم‌ها
+  // اختلاف تایم‌فریم
   if (
     trend15m === "BULLISH" &&
     trend1h === "BEARISH"
@@ -1165,7 +1759,8 @@ function scoreToSignal(
   }
 
   if (
-    score >= CONFIG.minScore &&
+    score >=
+      CONFIG.minScore &&
     trend15m === "BULLISH" &&
     trend1h === "BULLISH"
   ) {
@@ -1173,7 +1768,8 @@ function scoreToSignal(
   }
 
   if (
-    score >= CONFIG.minScore &&
+    score >=
+      CONFIG.minScore &&
     trend15m === "BEARISH" &&
     trend1h === "BEARISH"
   ) {
@@ -1187,12 +1783,20 @@ function scoreToSignal(
 // STRENGTH
 // ============================================================
 
-function getStrength(score) {
-  if (score >= CONFIG.strongScore) {
+function getStrength(
+  score
+) {
+  if (
+    score >=
+    CONFIG.strongScore
+  ) {
     return "STRONG";
   }
 
-  if (score >= CONFIG.minScore) {
+  if (
+    score >=
+    CONFIG.minScore
+  ) {
     return "MODERATE";
   }
 
@@ -1200,38 +1804,51 @@ function getStrength(score) {
 }
 
 // ============================================================
-// TELEGRAM
+// TELEGRAM PROCESS
 // ============================================================
 
-async function processSignal(signal, env) {
-  if (!env.TELEGRAM_BOT_TOKEN) {
+async function processSignal(
+  signal,
+  env
+) {
+  const token =
+    getTelegramToken(env);
+
+  const chatId =
+    getTelegramChatId(env);
+
+  if (!token) {
     return {
       telegram: false,
-      reason: "TELEGRAM_BOT_TOKEN missing"
+      reason:
+        "TELEGRAM_BOT_TOKEN missing"
     };
   }
 
-  if (!env.TELEGRAM_CHAT_ID) {
+  if (!chatId) {
     return {
       telegram: false,
-      reason: "TELEGRAM_CHAT_ID missing"
+      reason:
+        "TELEGRAM_CHAT_ID missing"
     };
   }
 
-  // WAIT ارسال نشود مگر اینکه بخواهیم
-  // فقط سیگنال واقعی به تلگرام برود.
+  // WAIT ارسال نمی‌شود
   if (
     signal.signal !== "BUY" &&
     signal.signal !== "SELL"
   ) {
     return {
       telegram: false,
-      reason: "WAIT signal"
+      reason:
+        "WAIT signal"
     };
   }
 
   const message =
-    formatTelegramMessage(signal);
+    formatTelegramMessage(
+      signal
+    );
 
   const result =
     await sendTelegram(
@@ -1240,8 +1857,16 @@ async function processSignal(signal, env) {
     );
 
   return {
-    telegram: result.ok,
-    response: result
+    telegram:
+      result.ok,
+
+    reason:
+      result.ok
+        ? "Telegram sent"
+        : result.error,
+
+    response:
+      result
   };
 }
 
@@ -1249,7 +1874,9 @@ async function processSignal(signal, env) {
 // TELEGRAM MESSAGE
 // ============================================================
 
-function formatTelegramMessage(signal) {
+function formatTelegramMessage(
+  signal
+) {
   const emoji =
     signal.signal === "BUY"
       ? "🟢"
@@ -1290,7 +1917,10 @@ Histogram: ${signal.indicators.macd_histogram}
 
 ATR 14: ${signal.indicators.atr14}
 
-ADX 14: ${signal.indicators.adx}
+ADX 14: ${signal.indicators.adx14}
+
++DI: ${signal.indicators.plusDI}
+-DI: ${signal.indicators.minusDI}
 
 Momentum: ${signal.indicators.momentum}%
 
@@ -1309,7 +1939,7 @@ MTF: ${signal.analysis.multi_timeframe}
 
 🕐 ${signal.timestamp}
 
-🚀 موتور هوشمند تحلیل طلا و فارکس
+🚀 موتور تحلیل طلا و فارکس
 V5.2 — Gold Focus
 `.trim();
 }
@@ -1322,46 +1952,166 @@ async function sendTelegram(
   message,
   env
 ) {
-  const url =
-    `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`;
+  const token =
+    getTelegramToken(env);
 
-  const response =
-    await fetch(url, {
-      method: "POST",
+  const chatId =
+    getTelegramChatId(env);
 
-      headers: {
-        "Content-Type":
-          "application/json"
-      },
-
-      body: JSON.stringify({
-        chat_id:
-          env.TELEGRAM_CHAT_ID,
-
-        text: message,
-
-        disable_web_page_preview:
-          true
-      })
-    });
-
-  const data =
-    await response.json();
-
-  if (!response.ok || !data.ok) {
+  if (!token) {
     return {
       ok: false,
-      status: response.status,
       error:
-        data.description ||
-        "Telegram error"
+        "Telegram bot token missing"
     };
   }
 
+  if (!chatId) {
+    return {
+      ok: false,
+      error:
+        "Telegram chat ID missing"
+    };
+  }
+
+  const url =
+    `https://api.telegram.org/bot${token}/sendMessage`;
+
+  try {
+
+    const response =
+      await fetch(
+        url,
+        {
+          method: "POST",
+
+          headers: {
+            "Content-Type":
+              "application/json"
+          },
+
+          body:
+            JSON.stringify({
+              chat_id:
+                chatId,
+
+              text:
+                message,
+
+              disable_web_page_preview:
+                true
+            })
+        }
+      );
+
+    const data =
+      await response.json();
+
+    if (
+      !response.ok ||
+      !data.ok
+    ) {
+      return {
+        ok: false,
+
+        status:
+          response.status,
+
+        error:
+          data.description ||
+          "Telegram API error"
+      };
+    }
+
+    return {
+      ok: true,
+
+      status:
+        response.status,
+
+      message_id:
+        data.result?.message_id ||
+        null
+    };
+
+  } catch (error) {
+
+    return {
+      ok: false,
+
+      error:
+        error?.message ||
+        String(error)
+    };
+  }
+}
+
+// ============================================================
+// TELEGRAM TEST
+// ============================================================
+
+async function testTelegram(
+  env
+) {
+  const token =
+    getTelegramToken(env);
+
+  const chatId =
+    getTelegramChatId(env);
+
+  if (!token) {
+    return {
+      ok: false,
+
+      telegram: false,
+
+      error:
+        "Telegram bot token is missing"
+    };
+  }
+
+  if (!chatId) {
+    return {
+      ok: false,
+
+      telegram: false,
+
+      error:
+        "Telegram chat ID is missing"
+    };
+  }
+
+  const message =
+    [
+      "✅ تست اتصال موتور سیگنال فارکس",
+
+      `نسخه: ${CONFIG.version}`,
+
+      `تمرکز: ${CONFIG.primarySymbol}`,
+
+      "وضعیت: اتصال Telegram برقرار است",
+
+      new Date()
+        .toISOString()
+    ].join("\n");
+
+  const result =
+    await sendTelegram(
+      message,
+      env
+    );
+
   return {
-    ok: true,
-    message_id:
-      data.result?.message_id || null
+    ok:
+      result.ok,
+
+    telegram:
+      result.ok,
+
+    result,
+
+    timestamp:
+      new Date().toISOString()
   };
 }
 
@@ -1369,20 +2119,40 @@ async function sendTelegram(
 // STATS
 // ============================================================
 
-async function getStats(env) {
+async function getStats(
+  env
+) {
+  const token =
+    getTelegramToken(env);
+
+  const chatId =
+    getTelegramChatId(env);
+
+  const twelveKey =
+    getTwelveDataKey(env);
+
   return {
     ok: true,
-    version: CONFIG.version,
+
+    version:
+      CONFIG.version,
 
     engine: {
-      status: "ONLINE",
-      primary: CONFIG.primarySymbol,
-      timeframe: CONFIG.interval,
+      status:
+        "ONLINE",
+
+      primary:
+        CONFIG.primarySymbol,
+
+      timeframe:
+        CONFIG.interval,
+
       confirmation:
         CONFIG.confirmationInterval
     },
 
-    symbols: CONFIG.symbols,
+    symbols:
+      CONFIG.symbols,
 
     indicators: [
       "EMA 20",
@@ -1396,12 +2166,29 @@ async function getStats(env) {
       "Breakout"
     ],
 
+    connections: {
+      twelve_data:
+        !!twelveKey,
+
+      telegram:
+        !!(
+          token &&
+          chatId
+        )
+    },
+
     telegram: {
       configured:
         !!(
-          env.TELEGRAM_BOT_TOKEN &&
-          env.TELEGRAM_CHAT_ID
-        )
+          token &&
+          chatId
+        ),
+
+      token:
+        !!token,
+
+      chat_id:
+        !!chatId
     },
 
     timestamp:
@@ -1413,16 +2200,22 @@ async function getStats(env) {
 // HELPERS
 // ============================================================
 
-function average(values) {
-  if (!values.length) {
+function average(
+  values
+) {
+  if (
+    !values.length
+  ) {
     return 0;
   }
 
   return (
     values.reduce(
-      (a, b) => a + b,
+      (a, b) =>
+        a + b,
       0
-    ) / values.length
+    ) /
+    values.length
   );
 }
 
@@ -1430,12 +2223,16 @@ function round(
   value,
   decimals = 4
 ) {
-  if (!Number.isFinite(value)) {
+  if (
+    !Number.isFinite(value)
+  ) {
     return 0;
   }
 
   return Number(
-    value.toFixed(decimals)
+    value.toFixed(
+      decimals
+    )
   );
 }
 
@@ -1490,4 +2287,4 @@ function corsResponse(
       }
     }
   );
-          }
+}
