@@ -1,15 +1,16 @@
 // ============================================================
-// FOREX SIGNAL ENGINE V4
+// FOREX SIGNAL ENGINE V5
 // Cloudflare Worker + D1 + Twelve Data + Telegram
-// Multi-Timeframe Forex Signal Engine
+// Focus: XAU/USD + Multi-Timeframe Confirmation
 // ============================================================
 
 const CONFIG = {
+  // Gold first
   symbols: [
+    "XAU/USD",
     "EUR/USD",
     "GBP/USD",
-    "USD/JPY",
-    "XAU/USD"
+    "USD/JPY"
   ],
 
   signalInterval: "15min",
@@ -18,8 +19,12 @@ const CONFIG = {
   candles15: 250,
   candles1h: 250,
 
-  minScore: 80,
-  minScoreGap: 15,
+  // 0-100 score
+  minScore: 72,
+  strongScore: 85,
+
+  // Difference between BUY and SELL
+  minScoreGap: 10,
 
   atrMultiplier: 1.5,
   tp1R: 2,
@@ -32,7 +37,12 @@ const CONFIG = {
   maxNewSignalsPerRun: 1,
   maxOpenSignals: 2,
 
-  minAtrPercent: 0.02
+  // Lowered from previous version so normal Gold volatility
+  // is not rejected too aggressively.
+  minAtrPercent: 0.01,
+
+  // Gold gets priority
+  goldPriorityBonus: 3
 };
 
 
@@ -88,10 +98,10 @@ function homePage() {
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 
-<title>Forex Signal Engine V4</title>
+<title>Gold & Forex Signal Engine</title>
 
 <meta name="description"
-content="Multi-timeframe forex signal engine using EMA, RSI, MACD, ATR and ADX.">
+content="Multi-timeframe analytical signal engine with special focus on XAU/USD Gold.">
 
 <style>
 body{
@@ -116,6 +126,7 @@ body{
 
 h1{
   font-size:30px;
+  margin-bottom:8px;
 }
 
 h2{
@@ -127,6 +138,10 @@ h2{
   padding:7px 12px;
   border-radius:20px;
   background:#1d3557;
+}
+
+.gold{
+  background:#6b4f00;
 }
 
 a{
@@ -148,8 +163,15 @@ a{
 <div class="container">
 
 <div class="card">
-<h1>Forex Signal Engine V4</h1>
-<p class="badge">Multi-Timeframe Signal Engine</p>
+<h1>Gold & Forex Signal Engine</h1>
+
+<p class="badge gold">
+XAU/USD Priority
+</p>
+
+<p class="badge">
+Multi-Timeframe Analysis
+</p>
 
 <p>
 15-minute signal analysis with 1-hour confirmation.
@@ -195,8 +217,13 @@ a{
 <div class="card">
 
 <p>
-This system generates analytical trading signals.
-It does not guarantee profit and does not execute broker trades.
+The engine identifies high-confirmation analytical trading
+opportunities using multiple technical indicators and timeframes.
+</p>
+
+<p>
+Trading decisions and risk management remain the responsibility
+of the user.
 </p>
 
 </div>
@@ -276,10 +303,6 @@ async function ensureDatabase(env) {
     );
   }
 
-  // ----------------------------------------------------------
-  // SETTINGS
-  // ----------------------------------------------------------
-
   await env.DB.prepare(
 `CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
@@ -287,11 +310,6 @@ async function ensureDatabase(env) {
   updated_at TEXT NOT NULL
 )`
   ).run();
-
-
-  // ----------------------------------------------------------
-  // SUBSCRIBERS
-  // ----------------------------------------------------------
 
   await env.DB.prepare(
 `CREATE TABLE IF NOT EXISTS subscribers (
@@ -303,11 +321,6 @@ async function ensureDatabase(env) {
   updated_at TEXT NOT NULL
 )`
   ).run();
-
-
-  // ----------------------------------------------------------
-  // SIGNALS
-  // ----------------------------------------------------------
 
   await env.DB.prepare(
 `CREATE TABLE IF NOT EXISTS signals (
@@ -330,11 +343,6 @@ async function ensureDatabase(env) {
 )`
   ).run();
 
-
-  // ----------------------------------------------------------
-  // SIGNAL EVENTS
-  // ----------------------------------------------------------
-
   await env.DB.prepare(
 `CREATE TABLE IF NOT EXISTS signal_events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -345,7 +353,6 @@ async function ensureDatabase(env) {
   created_at TEXT NOT NULL
 )`
   ).run();
-
 
   return true;
 }
@@ -378,10 +385,11 @@ async function health(env) {
     return json({
       ok: true,
       service: "forex-signal-engine",
-      version: "V4",
-      database: result?.database_ok === 1
-        ? "connected"
-        : "error",
+      version: "V5",
+      database:
+        result?.database_ok === 1
+          ? "connected"
+          : "error",
       time: new Date().toISOString()
     });
 
@@ -390,8 +398,10 @@ async function health(env) {
     return json({
       ok: false,
       service: "forex-signal-engine",
-      version: "V4",
-      error: error?.message || String(error)
+      version: "V5",
+      error:
+        error?.message ||
+        String(error)
     }, 500);
 
   }
@@ -715,7 +725,6 @@ function macd(values) {
       );
 
     }
-
   }
 
   if (macdValues.length < 9) {
@@ -1085,60 +1094,134 @@ function analyzeTimeframe(
   let buyScore = 0;
   let sellScore = 0;
 
+  const buyReasons = [];
+  const sellReasons = [];
 
-  // EMA
+
+  // ----------------------------------------------------------
+  // EMA TREND
+  // ----------------------------------------------------------
+
   if (
     ema20 !== null &&
-    ema50 !== null &&
+    ema50 !== null
+  ) {
+
+    if (
+      last.close > ema20
+    ) {
+      buyScore += 10;
+      buyReasons.push(
+        "Price above EMA20"
+      );
+    }
+
+    if (
+      last.close < ema20
+    ) {
+      sellScore += 10;
+      sellReasons.push(
+        "Price below EMA20"
+      );
+    }
+
+    if (
+      ema20 > ema50
+    ) {
+      buyScore += 10;
+      buyReasons.push(
+        "EMA20 above EMA50"
+      );
+    }
+
+    if (
+      ema20 < ema50
+    ) {
+      sellScore += 10;
+      sellReasons.push(
+        "EMA20 below EMA50"
+      );
+    }
+  }
+
+
+  // ----------------------------------------------------------
+  // EMA200
+  // ----------------------------------------------------------
+
+  if (
     ema200 !== null
   ) {
 
     if (
-      last.close > ema20 &&
-      ema20 > ema50 &&
-      ema50 > ema200
+      last.close > ema200
     ) {
-      buyScore += 25;
+      buyScore += 8;
+      buyReasons.push(
+        "Price above EMA200"
+      );
     }
 
     if (
-      last.close < ema20 &&
-      ema20 < ema50 &&
-      ema50 < ema200
+      last.close < ema200
     ) {
-      sellScore += 25;
+      sellScore += 8;
+      sellReasons.push(
+        "Price below EMA200"
+      );
     }
   }
 
 
+  // ----------------------------------------------------------
   // RSI
-  if (rsiValue !== null) {
+  // ----------------------------------------------------------
+
+  if (
+    rsiValue !== null
+  ) {
 
     if (
-      rsiValue >= 50 &&
+      rsiValue >= 52 &&
       rsiValue < 70
     ) {
-      buyScore += 15;
+      buyScore += 10;
+      buyReasons.push(
+        "Bullish RSI"
+      );
     }
 
     if (
-      rsiValue <= 50 &&
+      rsiValue <= 48 &&
       rsiValue > 30
     ) {
-      sellScore += 15;
+      sellScore += 10;
+      sellReasons.push(
+        "Bearish RSI"
+      );
     }
   }
 
 
+  // ----------------------------------------------------------
   // MACD
-  if (macdValue) {
+  // ----------------------------------------------------------
+
+  if (
+    macdValue
+  ) {
 
     if (
       macdValue.macd >
         macdValue.signal &&
       macdValue.histogram > 0
     ) {
-      buyScore += 15;
+
+      buyScore += 12;
+
+      buyReasons.push(
+        "Bullish MACD"
+      );
     }
 
     if (
@@ -1146,61 +1229,153 @@ function analyzeTimeframe(
         macdValue.signal &&
       macdValue.histogram < 0
     ) {
-      sellScore += 15;
+
+      sellScore += 12;
+
+      sellReasons.push(
+        "Bearish MACD"
+      );
     }
   }
 
 
+  // ----------------------------------------------------------
   // ADX
+  // ----------------------------------------------------------
+
   if (
-    adxValue !== null &&
-    adxValue >= 20
+    adxValue !== null
   ) {
 
     if (
-      buyScore >= sellScore
+      adxValue >= 20
     ) {
-      buyScore += 10;
-    } else {
-      sellScore += 10;
+
+      // ADX confirms trend strength.
+      if (
+        buyScore >
+        sellScore
+      ) {
+
+        buyScore += 10;
+
+        buyReasons.push(
+          "ADX trend strength confirmed"
+        );
+
+      } else if (
+        sellScore >
+        buyScore
+      ) {
+
+        sellScore += 10;
+
+        sellReasons.push(
+          "ADX trend strength confirmed"
+        );
+      }
     }
   }
 
 
-  // Momentum
-  if (momentum === 1) {
+  // ----------------------------------------------------------
+  // MOMENTUM
+  // ----------------------------------------------------------
+
+  if (
+    momentum === 1
+  ) {
+
     buyScore += 10;
+
+    buyReasons.push(
+      "Bullish candle momentum"
+    );
   }
 
-  if (momentum === -1) {
+  if (
+    momentum === -1
+  ) {
+
     sellScore += 10;
+
+    sellReasons.push(
+      "Bearish candle momentum"
+    );
   }
 
 
-  // Breakout
-  if (breakout === 1) {
+  // ----------------------------------------------------------
+  // BREAKOUT
+  // ----------------------------------------------------------
+
+  if (
+    breakout === 1
+  ) {
+
     buyScore += 10;
+
+    buyReasons.push(
+      "Bullish breakout"
+    );
   }
 
-  if (breakout === -1) {
+  if (
+    breakout === -1
+  ) {
+
     sellScore += 10;
+
+    sellReasons.push(
+      "Bearish breakout"
+    );
   }
 
 
   return {
     price: last.close,
+
     ema20,
     ema50,
     ema200,
+
     rsi: rsiValue,
     macd: macdValue,
     atr: atrValue,
     adx: adxValue,
+
     momentum,
     breakout,
+
     buyScore,
-    sellScore
+    sellScore,
+
+    buyReasons,
+    sellReasons
   };
+}
+
+
+// ============================================================
+// SCORE CONVERSION
+// ============================================================
+
+function convertTo100(
+  score15,
+  score1h
+) {
+
+  // Each timeframe maximum = 80
+  // Combined maximum = 160
+  const combined =
+    score15 + score1h;
+
+  return Math.min(
+    100,
+    Math.round(
+      combined / 160 * 100
+    )
+  );
 }
 
 
@@ -1222,7 +1397,7 @@ function buildSignal(
   }
 
 
-  // Ignore currently forming candles.
+  // Use closed candles only.
   const closed15 =
     candles15.slice(
       0,
@@ -1247,43 +1422,128 @@ function buildSignal(
     );
 
 
-  const buyScore =
+  let buyRaw =
     analysis15.buyScore +
     analysis1h.buyScore;
 
-  const sellScore =
+  let sellRaw =
     analysis15.sellScore +
     analysis1h.sellScore;
 
 
+  // Gold receives a small priority bonus.
+  if (
+    symbol === "XAU/USD"
+  ) {
+
+    if (
+      buyRaw >
+      sellRaw
+    ) {
+      buyRaw +=
+        CONFIG.goldPriorityBonus;
+    }
+
+    if (
+      sellRaw >
+      buyRaw
+    ) {
+      sellRaw +=
+        CONFIG.goldPriorityBonus;
+    }
+  }
+
+
+  const buyScore =
+    convertTo100(
+      analysis15.buyScore,
+      analysis1h.buyScore
+    );
+
+  const sellScore =
+    convertTo100(
+      analysis15.sellScore,
+      analysis1h.sellScore
+    );
+
+
+  // Priority bonus is applied after conversion.
+  const finalBuyScore =
+    symbol === "XAU/USD" &&
+    buyRaw > sellRaw
+      ? Math.min(
+          100,
+          buyScore +
+          CONFIG.goldPriorityBonus
+        )
+      : buyScore;
+
+  const finalSellScore =
+    symbol === "XAU/USD" &&
+    sellRaw > buyRaw
+      ? Math.min(
+          100,
+          sellScore +
+          CONFIG.goldPriorityBonus
+        )
+      : sellScore;
+
+
   let direction = null;
+  let score = 0;
+  let reasons = [];
+
+
+  // ----------------------------------------------------------
+  // BUY
+  // ----------------------------------------------------------
 
   if (
-    buyScore >= CONFIG.minScore &&
-    buyScore - sellScore >=
+    finalBuyScore >=
+      CONFIG.minScore &&
+    finalBuyScore -
+      finalSellScore >=
       CONFIG.minScoreGap
   ) {
+
     direction = "BUY";
+    score = finalBuyScore;
+
+    reasons = [
+      ...analysis15.buyReasons,
+      ...analysis1h.buyReasons
+    ];
+
   }
 
+
+  // ----------------------------------------------------------
+  // SELL
+  // ----------------------------------------------------------
+
   if (
-    sellScore >= CONFIG.minScore &&
-    sellScore - buyScore >=
+    finalSellScore >=
+      CONFIG.minScore &&
+    finalSellScore -
+      finalBuyScore >=
       CONFIG.minScoreGap
   ) {
+
     direction = "SELL";
+    score = finalSellScore;
+
+    reasons = [
+      ...analysis15.sellReasons,
+      ...analysis1h.sellReasons
+    ];
+
   }
+
 
   if (!direction) {
     return null;
   }
 
-
-  const score =
-    Math.max(
-      buyScore,
-      sellScore
-    );
 
   const entry =
     analysis15.price;
@@ -1316,17 +1576,22 @@ function buildSignal(
   }
 
 
+  // ----------------------------------------------------------
+  // RISK / REWARD
+  // ----------------------------------------------------------
+
   const risk =
     atrValue *
     CONFIG.atrMultiplier;
-
 
   let stopLoss;
   let tp1;
   let tp2;
 
 
-  if (direction === "BUY") {
+  if (
+    direction === "BUY"
+  ) {
 
     stopLoss =
       entry - risk;
@@ -1354,21 +1619,45 @@ function buildSignal(
   }
 
 
+  const strength =
+    score >=
+    CONFIG.strongScore
+      ? "STRONG"
+      : "GOOD";
+
+
   return {
     symbol,
+
     direction,
+
+    strength,
+
     score,
+
     confidence: score,
+
     entry,
+
     stopLoss,
+
     tp1,
+
     tp2,
+
     atr: atrValue,
+
+    atrPercent,
+
     timeframe:
       CONFIG.signalInterval,
+
     confirmationTimeframe:
       CONFIG.confirmInterval,
-    reason: {
+
+    reasons,
+
+    analysis: {
       signal15m: analysis15,
       confirmation1h: analysis1h
     }
@@ -1492,9 +1781,14 @@ VALUES
       signal.timeframe,
       signal.confirmationTimeframe,
       "OPEN",
-      JSON.stringify(
-        signal.reason
-      ),
+      JSON.stringify({
+        strength:
+          signal.strength,
+        reasons:
+          signal.reasons,
+        analysis:
+          signal.analysis
+      }),
       now
     )
     .run();
@@ -1544,26 +1838,40 @@ function formatSignal(
       ? "🟢"
       : "🔴";
 
-  return `${emoji} FOREX SIGNAL
+  const reasons =
+    signal.reasons
+      .slice(0, 8)
+      .map(
+        x => "• " + x
+      )
+      .join("\n");
 
-Symbol: ${signal.symbol}
+  return `${emoji} ${signal.strength} SIGNAL
+
+${signal.symbol}
+
 Direction: ${signal.direction}
 
-Score: ${signal.score}/200
+🔥 Strength: ${signal.score}/100
 
 Entry: ${formatPrice(signal.entry)}
-Stop Loss: ${formatPrice(signal.stopLoss)}
 
-TP1: ${formatPrice(signal.tp1)}
-TP2: ${formatPrice(signal.tp2)}
+🛑 Stop Loss:
+${formatPrice(signal.stopLoss)}
+
+🎯 TP1:
+${formatPrice(signal.tp1)}
+
+🎯 TP2:
+${formatPrice(signal.tp2)}
 
 Timeframe: ${signal.timeframe}
 Confirmation: ${signal.confirmationTimeframe}
 
-Risk model: ${CONFIG.riskPercent}%
+Technical confirmations:
+${reasons}
 
-Analytical signal only.
-No profit guarantee.`;
+Risk model: ${CONFIG.riskPercent}%`;
 }
 
 
@@ -1608,10 +1916,12 @@ WHERE active = 1`
           `https://api.telegram.org/bot${token}/sendMessage`,
           {
             method: "POST",
+
             headers: {
               "content-type":
                 "application/json"
             },
+
             body:
               JSON.stringify({
                 chat_id:
@@ -1670,7 +1980,7 @@ async function runEngine(env) {
 
     return {
       ok: true,
-      version: "V4",
+      version: "V5",
       message:
         "Maximum open signals reached",
       openSignals
@@ -1682,6 +1992,7 @@ async function runEngine(env) {
   const generated = [];
 
 
+  // Gold is intentionally first.
   for (
     const symbol
     of CONFIG.symbols
@@ -1802,7 +2113,7 @@ VALUES
 
   return {
     ok: true,
-    version: "V4",
+    version: "V5",
     generated,
     generatedCount:
       generated.length,
@@ -1847,6 +2158,7 @@ async function apiSignals(env) {
   timeframe,
   confirmation_timeframe,
   status,
+  reason,
   created_at,
   closed_at
 FROM signals
@@ -1915,17 +2227,34 @@ WHERE direction = 'SELL'`
     ).first();
 
 
+  const gold =
+    await env.DB.prepare(
+`SELECT COUNT(*) AS count
+FROM signals
+WHERE symbol = 'XAU/USD'`
+    ).first();
+
+
   return json({
     ok: true,
-    version: "V4",
+
+    version: "V5",
+
     totalSignals:
       Number(total?.count || 0),
+
     openSignals:
       Number(open?.count || 0),
+
     buySignals:
       Number(buy?.count || 0),
+
     sellSignals:
       Number(sell?.count || 0),
+
+    goldSignals:
+      Number(gold?.count || 0),
+
     time:
       new Date().toISOString()
   });
@@ -1996,7 +2325,6 @@ async function telegramWebhook(
       message.text || ""
     ).trim();
 
-
   const now =
     new Date().toISOString();
 
@@ -2040,9 +2368,11 @@ updated_at = excluded.updated_at`
     await sendTelegramToChat(
       env,
       chatId,
-`FOREX SIGNAL ENGINE
+`GOLD & FOREX SIGNAL ENGINE
 
 You are subscribed.
+
+XAU/USD is the priority market.
 
 Commands:
 
@@ -2086,7 +2416,7 @@ LIMIT 5`
 
       output +=
 `${signal.symbol} ${signal.direction}
-Score: ${signal.score}
+Strength: ${signal.score}/100
 Entry: ${signal.entry}
 SL: ${signal.stop_loss}
 TP1: ${signal.tp1}
@@ -2125,13 +2455,24 @@ WHERE status = 'OPEN'`
       ).first();
 
 
+    const gold =
+      await env.DB.prepare(
+`SELECT COUNT(*) AS count
+FROM signals
+WHERE symbol = 'XAU/USD'`
+      ).first();
+
+
     await sendTelegramToChat(
       env,
       chatId,
-`FOREX ENGINE STATS
+`GOLD & FOREX ENGINE STATS
 
 Total signals: ${total?.count || 0}
-Open signals: ${open?.count || 0}`
+
+Open signals: ${open?.count || 0}
+
+XAU/USD signals: ${gold?.count || 0}`
     );
 
   }
@@ -2166,10 +2507,12 @@ async function sendTelegramToChat(
       `https://api.telegram.org/bot${token}/sendMessage`,
       {
         method: "POST",
+
         headers: {
           "content-type":
             "application/json"
         },
+
         body:
           JSON.stringify({
             chat_id: chatId,
