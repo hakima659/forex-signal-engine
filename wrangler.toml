@@ -1,1 +1,7 @@
 
+name = "forex-signal-engine"
+main = "forex-engine.js"
+compatibility_date = "2026-09-16"
+
+[triggers]
+crons = ["*/15 * * * *"]
