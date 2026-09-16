@@ -1,7 +1,7 @@
 // ============================================================
 // FOREX SIGNAL ENGINE V5.2 GOLD FOCUS
 // Cloudflare Worker + D1 + Twelve Data + Telegram
-// Focus: XAU/USD + Multi-Timeframe Confirmation
+// XAU/USD: 15m Signal + 1h Trend Confirmation
 // ============================================================
 
 const CONFIG = {
@@ -18,31 +18,34 @@ const CONFIG = {
   candles15: 250,
   candles1h: 250,
 
+  // Signal quality
   minScore: 72,
   strongScore: 85,
   minScoreGap: 10,
 
+  // Gold requires actual timeframe alignment
+  goldRequireAlignment: true,
+
+  // Gold ADX filters
+  goldMinAdx15: 18,
+  goldMinAdx1h: 20,
+
+  // ATR
   atrMultiplier: 1.5,
   tp1R: 2,
   tp2R: 3,
+  minAtrPercent: 0.01,
 
+  // Risk information only
   riskPercent: 0.5,
 
+  // Signal control
   cooldownMinutes: 60,
-
   maxNewSignalsPerRun: 1,
   maxOpenSignals: 2,
 
-  minAtrPercent: 0.01,
-
   // Gold priority
   goldPriorityBonus: 3,
-
-  // Gold V5.2 filters
-  goldMinAdx15: 15,
-  goldMinAdx1h: 20,
-
-  // Gold extra confirmations
   goldAlignmentBonus: 8,
   goldTrendBonus: 5
 };
@@ -100,7 +103,7 @@ function homePage() {
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 
-<title>Gold & Forex Signal Engine</title>
+<title>Gold & Forex Signal Engine V5.2</title>
 
 <meta name="description"
 content="Multi-timeframe analytical signal engine with special focus on XAU/USD Gold.">
@@ -173,15 +176,15 @@ XAU/USD Priority
 </p>
 
 <p class="badge">
-Multi-Timeframe Analysis
+V5.2
 </p>
 
 <p class="badge">
-V5.2 Gold Focus
+15m + 1h
 </p>
 
 <p>
-15-minute signal analysis with 1-hour confirmation.
+15-minute analytical signals with 1-hour trend confirmation.
 </p>
 </div>
 
@@ -190,11 +193,12 @@ V5.2 Gold Focus
 <h2>Gold Analysis</h2>
 
 <p>
-XAU/USD receives special multi-timeframe filtering.
+XAU/USD is processed first and receives additional
+multi-timeframe validation.
 </p>
 
 <p>
-15m trend + 1h trend + ADX + EMA + RSI + MACD + ATR
+15m + 1h + EMA + RSI + MACD + ATR + ADX + Momentum + Breakout
 </p>
 
 </div>
@@ -205,9 +209,9 @@ XAU/USD receives special multi-timeframe filtering.
 
 <p>EMA 20 / 50 / 200</p>
 <p>RSI 14</p>
-<p>MACD</p>
-<p>ATR</p>
-<p>ADX</p>
+<p>MACD 12 / 26 / 9</p>
+<p>ATR 14</p>
+<p>ADX 14 + Directional Movement</p>
 <p>Momentum</p>
 <p>Breakout</p>
 
@@ -238,14 +242,8 @@ XAU/USD receives special multi-timeframe filtering.
 <div class="card">
 
 <p>
-The engine identifies multi-confirmation analytical
-trading opportunities using multiple technical indicators
-and timeframes.
-</p>
-
-<p>
-XAU/USD is processed first and receives additional
-trend and alignment validation.
+Signals are analytical outputs based on technical indicators.
+No profit or trading result is guaranteed.
 </p>
 
 </div>
@@ -285,8 +283,7 @@ function sitemapXml() {
   return new Response(
 `<?xml version="1.0" encoding="UTF-8"?>
 
-<urlset
-xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
 
 <url>
 <loc>https://forex-signal-engine.hakima09360.workers.dev/</loc>
@@ -298,6 +295,10 @@ xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
 
 <url>
 <loc>https://forex-signal-engine.hakima09360.workers.dev/api/signals</loc>
+</url>
+
+<url>
+<loc>https://forex-signal-engine.hakima09360.workers.dev/api/stats</loc>
 </url>
 
 </urlset>`,
@@ -312,15 +313,13 @@ xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
 
 
 // ============================================================
-// D1 DATABASE
+// D1
 // ============================================================
 
 async function ensureDatabase(env) {
 
   if (!env.DB) {
-    throw new Error(
-      "D1 binding DB is missing"
-    );
+    throw new Error("D1 binding DB is missing");
   }
 
   await env.DB.prepare(
@@ -404,6 +403,9 @@ async function health(env) {
       ok: true,
       service: "forex-signal-engine",
       version: "V5.2",
+      priority: "XAU/USD",
+      signalTimeframe: "15min",
+      confirmationTimeframe: "1h",
       database:
         result?.database_ok === 1
           ? "connected"
@@ -545,7 +547,9 @@ function emaSeries(values, period) {
     return [];
   }
 
-  const result = [];
+  const result =
+    new Array(values.length)
+      .fill(undefined);
 
   let seed = 0;
 
@@ -833,7 +837,7 @@ function atr(
 
 
 // ============================================================
-// ADX
+// ADX + DI
 // ============================================================
 
 function adx(
@@ -842,6 +846,7 @@ function adx(
 ) {
 
   if (
+    !Array.isArray(candles) ||
     candles.length <
     period * 2 + 1
   ) {
@@ -918,7 +923,7 @@ function adx(
     tr === null ||
     plus === null ||
     minus === null ||
-    tr === 0
+    tr <= 0
   ) {
     return null;
   }
@@ -933,16 +938,38 @@ function adx(
     plusDI + minusDI;
 
   if (total === 0) {
-    return 0;
+    return {
+      adx: 0,
+      plusDI: 0,
+      minusDI: 0,
+      direction: "NEUTRAL"
+    };
   }
 
-  return (
+  const dx =
     100 *
     Math.abs(
       plusDI - minusDI
     ) /
-    total
-  );
+    total;
+
+  let direction =
+    "NEUTRAL";
+
+  if (plusDI > minusDI) {
+    direction = "BUY";
+  }
+
+  if (minusDI > plusDI) {
+    direction = "SELL";
+  }
+
+  return {
+    adx: dx,
+    plusDI,
+    minusDI,
+    direction
+  };
 }
 
 
@@ -952,7 +979,7 @@ function adx(
 
 function candleMomentum(candles) {
 
-  if (candles.length < 3) {
+  if (candles.length < 4) {
     return 0;
   }
 
@@ -1108,23 +1135,20 @@ function analyzeTimeframe(
   const sellReasons = [];
 
 
+  // ----------------------------------------------------------
   // EMA20
-  if (
-    ema20 !== null
-  ) {
+  // ----------------------------------------------------------
 
-    if (
-      last.close > ema20
-    ) {
+  if (ema20 !== null) {
+
+    if (last.close > ema20) {
       buyScore += 10;
       buyReasons.push(
         "Price above EMA20"
       );
     }
 
-    if (
-      last.close < ema20
-    ) {
+    if (last.close < ema20) {
       sellScore += 10;
       sellReasons.push(
         "Price below EMA20"
@@ -1133,24 +1157,23 @@ function analyzeTimeframe(
   }
 
 
+  // ----------------------------------------------------------
   // EMA20 / EMA50
+  // ----------------------------------------------------------
+
   if (
     ema20 !== null &&
     ema50 !== null
   ) {
 
-    if (
-      ema20 > ema50
-    ) {
+    if (ema20 > ema50) {
       buyScore += 10;
       buyReasons.push(
         "EMA20 above EMA50"
       );
     }
 
-    if (
-      ema20 < ema50
-    ) {
+    if (ema20 < ema50) {
       sellScore += 10;
       sellReasons.push(
         "EMA20 below EMA50"
@@ -1159,23 +1182,20 @@ function analyzeTimeframe(
   }
 
 
+  // ----------------------------------------------------------
   // EMA200
-  if (
-    ema200 !== null
-  ) {
+  // ----------------------------------------------------------
 
-    if (
-      last.close > ema200
-    ) {
+  if (ema200 !== null) {
+
+    if (last.close > ema200) {
       buyScore += 8;
       buyReasons.push(
         "Price above EMA200"
       );
     }
 
-    if (
-      last.close < ema200
-    ) {
+    if (last.close < ema200) {
       sellScore += 8;
       sellReasons.push(
         "Price below EMA200"
@@ -1184,16 +1204,19 @@ function analyzeTimeframe(
   }
 
 
+  // ----------------------------------------------------------
   // RSI
-  if (
-    rsiValue !== null
-  ) {
+  // ----------------------------------------------------------
+
+  if (rsiValue !== null) {
 
     if (
       rsiValue >= 52 &&
       rsiValue < 70
     ) {
+
       buyScore += 10;
+
       buyReasons.push(
         "Bullish RSI"
       );
@@ -1203,7 +1226,9 @@ function analyzeTimeframe(
       rsiValue <= 48 &&
       rsiValue > 30
     ) {
+
       sellScore += 10;
+
       sellReasons.push(
         "Bearish RSI"
       );
@@ -1211,14 +1236,15 @@ function analyzeTimeframe(
   }
 
 
+  // ----------------------------------------------------------
   // MACD
-  if (
-    macdValue
-  ) {
+  // ----------------------------------------------------------
+
+  if (macdValue) {
 
     if (
       macdValue.macd >
-        macdValue.signal &&
+      macdValue.signal &&
       macdValue.histogram > 0
     ) {
 
@@ -1231,7 +1257,7 @@ function analyzeTimeframe(
 
     if (
       macdValue.macd <
-        macdValue.signal &&
+      macdValue.signal &&
       macdValue.histogram < 0
     ) {
 
@@ -1244,41 +1270,45 @@ function analyzeTimeframe(
   }
 
 
-  // ADX
-  if (
-    adxValue !== null &&
-    adxValue >= 20
-  ) {
+  // ----------------------------------------------------------
+  // ADX + DIRECTION
+  // ----------------------------------------------------------
+
+  if (adxValue) {
 
     if (
-      buyScore >
-      sellScore
+      adxValue.adx >= 20 &&
+      adxValue.plusDI >
+      adxValue.minusDI
     ) {
 
       buyScore += 10;
 
       buyReasons.push(
-        "ADX trend strength confirmed"
+        "ADX +DI trend strength"
       );
+    }
 
-    } else if (
-      sellScore >
-      buyScore
+    if (
+      adxValue.adx >= 20 &&
+      adxValue.minusDI >
+      adxValue.plusDI
     ) {
 
       sellScore += 10;
 
       sellReasons.push(
-        "ADX trend strength confirmed"
+        "ADX -DI trend strength"
       );
     }
   }
 
 
-  // Momentum
-  if (
-    momentum === 1
-  ) {
+  // ----------------------------------------------------------
+  // MOMENTUM
+  // ----------------------------------------------------------
+
+  if (momentum === 1) {
 
     buyScore += 10;
 
@@ -1287,9 +1317,7 @@ function analyzeTimeframe(
     );
   }
 
-  if (
-    momentum === -1
-  ) {
+  if (momentum === -1) {
 
     sellScore += 10;
 
@@ -1299,10 +1327,11 @@ function analyzeTimeframe(
   }
 
 
-  // Breakout
-  if (
-    breakout === 1
-  ) {
+  // ----------------------------------------------------------
+  // BREAKOUT
+  // ----------------------------------------------------------
+
+  if (breakout === 1) {
 
     buyScore += 10;
 
@@ -1311,9 +1340,7 @@ function analyzeTimeframe(
     );
   }
 
-  if (
-    breakout === -1
-  ) {
+  if (breakout === -1) {
 
     sellScore += 10;
 
@@ -1324,6 +1351,7 @@ function analyzeTimeframe(
 
 
   return {
+
     price: last.close,
 
     ema20,
@@ -1331,24 +1359,41 @@ function analyzeTimeframe(
     ema200,
 
     rsi: rsiValue,
+
     macd: macdValue,
+
     atr: atrValue,
-    adx: adxValue,
+
+    adx:
+      adxValue?.adx ?? null,
+
+    plusDI:
+      adxValue?.plusDI ?? null,
+
+    minusDI:
+      adxValue?.minusDI ?? null,
+
+    adxDirection:
+      adxValue?.direction ||
+      "NEUTRAL",
 
     momentum,
+
     breakout,
 
     buyScore,
+
     sellScore,
 
     buyReasons,
+
     sellReasons
   };
 }
 
 
 // ============================================================
-// SCORE CONVERSION
+// SCORE
 // ============================================================
 
 function convertTo100(
@@ -1369,7 +1414,7 @@ function convertTo100(
 
 
 // ============================================================
-// BUILD SIGNAL V5.2
+// BUILD SIGNAL
 // ============================================================
 
 function buildSignal(
@@ -1389,18 +1434,18 @@ function buildSignal(
       diagnostics: {
         symbol,
         status: "REJECTED",
-        reason: "INSUFFICIENT_CANDLES",
-        candles15: candles15.length,
-        candles1h: candles1h.length
+        reason:
+          "INSUFFICIENT_CANDLES",
+        candles15:
+          candles15.length,
+        candles1h:
+          candles1h.length
       }
     };
   }
 
 
-  // ----------------------------------------------------------
-  // CLOSED CANDLES ONLY
-  // ----------------------------------------------------------
-
+  // Closed candles only.
   const closed15 =
     candles15.slice(
       0,
@@ -1425,23 +1470,6 @@ function buildSignal(
     );
 
 
-  // ----------------------------------------------------------
-  // RAW SCORES
-  // ----------------------------------------------------------
-
-  const buyRaw =
-    analysis15.buyScore +
-    analysis1h.buyScore;
-
-  const sellRaw =
-    analysis15.sellScore +
-    analysis1h.sellScore;
-
-
-  // ----------------------------------------------------------
-  // BASE SCORES
-  // ----------------------------------------------------------
-
   const baseBuyScore =
     convertTo100(
       analysis15.buyScore,
@@ -1464,61 +1492,16 @@ function buildSignal(
 
   let goldTrendDirection = null;
   let goldAlignment = null;
-  let goldFilterPassed = true;
-  let goldFilterReason = null;
 
 
   // ==========================================================
-  // GOLD SPECIAL LOGIC
+  // GOLD SPECIAL FILTER
   // ==========================================================
 
-  if (
-    symbol === "XAU/USD"
-  ) {
+  if (symbol === "XAU/USD") {
 
     // --------------------------------------------------------
-    // 1. 15m ADX
-    // --------------------------------------------------------
-
-    if (
-      !Number.isFinite(
-        analysis15.adx
-      ) ||
-      analysis15.adx <
-      CONFIG.goldMinAdx15
-    ) {
-
-      goldFilterPassed = false;
-
-      goldFilterReason =
-        "GOLD_15M_ADX_TOO_LOW";
-    }
-
-
-    // --------------------------------------------------------
-    // 2. 1h ADX
-    // --------------------------------------------------------
-
-    if (
-      goldFilterPassed &&
-      (
-        !Number.isFinite(
-          analysis1h.adx
-        ) ||
-        analysis1h.adx <
-        CONFIG.goldMinAdx1h
-      )
-    ) {
-
-      goldFilterPassed = false;
-
-      goldFilterReason =
-        "GOLD_1H_ADX_TOO_LOW";
-    }
-
-
-    // --------------------------------------------------------
-    // 3. 1H TREND
+    // 1H TREND
     // --------------------------------------------------------
 
     const bullish1h =
@@ -1527,7 +1510,9 @@ function buildSignal(
       analysis1h.ema20 >
       analysis1h.ema50 &&
       analysis1h.price >
-      analysis1h.ema200;
+      analysis1h.ema200 &&
+      analysis1h.adxDirection ===
+      "BUY";
 
     const bearish1h =
       analysis1h.price <
@@ -1535,7 +1520,9 @@ function buildSignal(
       analysis1h.ema20 <
       analysis1h.ema50 &&
       analysis1h.price <
-      analysis1h.ema200;
+      analysis1h.ema200 &&
+      analysis1h.adxDirection ===
+      "SELL";
 
 
     if (bullish1h) {
@@ -1556,24 +1543,28 @@ function buildSignal(
 
 
     // --------------------------------------------------------
-    // 4. 15M TREND
+    // 15M TREND
     // --------------------------------------------------------
 
     const bullish15 =
       analysis15.price >
       analysis15.ema20 &&
       analysis15.ema20 >
-      analysis15.ema50;
+      analysis15.ema50 &&
+      analysis15.adxDirection ===
+      "BUY";
 
     const bearish15 =
       analysis15.price <
       analysis15.ema20 &&
       analysis15.ema20 <
-      analysis15.ema50;
+      analysis15.ema50 &&
+      analysis15.adxDirection ===
+      "SELL";
 
 
     // --------------------------------------------------------
-    // 5. ALIGNMENT
+    // ALIGNMENT
     // --------------------------------------------------------
 
     if (
@@ -1600,7 +1591,26 @@ function buildSignal(
 
 
     // --------------------------------------------------------
-    // 6. 1H TREND BONUS
+    // ADX FILTER
+    // --------------------------------------------------------
+
+    const adx15Ok =
+      Number.isFinite(
+        analysis15.adx
+      ) &&
+      analysis15.adx >=
+      CONFIG.goldMinAdx15;
+
+    const adx1hOk =
+      Number.isFinite(
+        analysis1h.adx
+      ) &&
+      analysis1h.adx >=
+      CONFIG.goldMinAdx1h;
+
+
+    // --------------------------------------------------------
+    // GOLD SCORE BONUSES
     // --------------------------------------------------------
 
     if (
@@ -1614,8 +1624,9 @@ function buildSignal(
           finalBuyScore +
           CONFIG.goldTrendBonus
         );
+    }
 
-    } else if (
+    if (
       goldTrendDirection ===
       "SELL"
     ) {
@@ -1629,10 +1640,6 @@ function buildSignal(
     }
 
 
-    // --------------------------------------------------------
-    // 7. 15M + 1H ALIGNMENT BONUS
-    // --------------------------------------------------------
-
     if (
       goldAlignment ===
       "BUY"
@@ -1644,8 +1651,9 @@ function buildSignal(
           finalBuyScore +
           CONFIG.goldAlignmentBonus
         );
+    }
 
-    } else if (
+    if (
       goldAlignment ===
       "SELL"
     ) {
@@ -1659,10 +1667,7 @@ function buildSignal(
     }
 
 
-    // --------------------------------------------------------
-    // 8. GOLD PRIORITY BONUS
-    // --------------------------------------------------------
-
+    // Gold priority
     if (
       finalBuyScore >
       finalSellScore
@@ -1690,12 +1695,10 @@ function buildSignal(
 
 
     // --------------------------------------------------------
-    // 9. GOLD FILTER REJECTION
+    // HARD GOLD FILTER
     // --------------------------------------------------------
 
-    if (
-      !goldFilterPassed
-    ) {
+    if (!adx15Ok) {
 
       return {
         signal: null,
@@ -1703,9 +1706,8 @@ function buildSignal(
         diagnostics: {
           symbol,
           status: "REJECTED",
-
           reason:
-            goldFilterReason,
+            "GOLD_15M_ADX_TOO_LOW",
 
           buyScore:
             finalBuyScore,
@@ -1713,51 +1715,17 @@ function buildSignal(
           sellScore:
             finalSellScore,
 
-          scoreGap:
-            Math.abs(
-              finalBuyScore -
-              finalSellScore
-            ),
-
-          requiredScore:
-            CONFIG.minScore,
-
-          requiredGap:
-            CONFIG.minScoreGap,
-
-          rawBuyScore:
-            buyRaw,
-
-          rawSellScore:
-            sellRaw,
-
-          price15m:
-            analysis15.price,
-
-          rsi15m:
-            analysis15.rsi,
-
-          rsi1h:
-            analysis1h.rsi,
-
           adx15m:
             analysis15.adx,
+
+          requiredAdx15m:
+            CONFIG.goldMinAdx15,
 
           adx1h:
             analysis1h.adx,
 
-          atr15m:
-            analysis15.atr,
-
           goldTrendDirection,
-
           goldAlignment,
-
-          goldMinAdx15:
-            CONFIG.goldMinAdx15,
-
-          goldMinAdx1h:
-            CONFIG.goldMinAdx1h,
 
           buyReasons15m:
             analysis15.buyReasons,
@@ -1773,11 +1741,111 @@ function buildSignal(
         }
       };
     }
+
+
+    if (!adx1hOk) {
+
+      return {
+        signal: null,
+
+        diagnostics: {
+          symbol,
+          status: "REJECTED",
+          reason:
+            "GOLD_1H_ADX_TOO_LOW",
+
+          buyScore:
+            finalBuyScore,
+
+          sellScore:
+            finalSellScore,
+
+          adx15m:
+            analysis15.adx,
+
+          adx1h:
+            analysis1h.adx,
+
+          requiredAdx1h:
+            CONFIG.goldMinAdx1h,
+
+          goldTrendDirection,
+          goldAlignment,
+
+          buyReasons15m:
+            analysis15.buyReasons,
+
+          sellReasons15m:
+            analysis15.sellReasons,
+
+          buyReasons1h:
+            analysis1h.buyReasons,
+
+          sellReasons1h:
+            analysis1h.sellReasons
+        }
+      };
+    }
+
+
+    // --------------------------------------------------------
+    // CRITICAL: GOLD MUST ALIGN
+    // --------------------------------------------------------
+
+    if (
+      CONFIG.goldRequireAlignment &&
+      goldAlignment === "MIXED"
+    ) {
+
+      return {
+        signal: null,
+
+        diagnostics: {
+          symbol,
+          status: "REJECTED",
+          reason:
+            "GOLD_TIMEFRAME_MISALIGNMENT",
+
+          buyScore:
+            finalBuyScore,
+
+          sellScore:
+            finalSellScore,
+
+          scoreGap:
+            Math.abs(
+              finalBuyScore -
+              finalSellScore
+            ),
+
+          goldTrendDirection,
+          goldAlignment,
+
+          trend15m:
+            analysis15.adxDirection,
+
+          trend1h:
+            analysis1h.adxDirection,
+
+          adx15m:
+            analysis15.adx,
+
+          adx1h:
+            analysis1h.adx,
+
+          rsi15m:
+            analysis15.rsi,
+
+          rsi1h:
+            analysis1h.rsi
+        }
+      };
+    }
   }
 
 
   // ==========================================================
-  // FINAL GAP
+  // FINAL SCORE GAP
   // ==========================================================
 
   const gap =
@@ -1790,7 +1858,6 @@ function buildSignal(
   let direction = null;
   let score = 0;
   let reasons = [];
-  let rejectionReason = null;
 
 
   // ==========================================================
@@ -1818,8 +1885,7 @@ function buildSignal(
 
     if (
       symbol === "XAU/USD" &&
-      goldTrendDirection ===
-      "BUY"
+      goldTrendDirection === "BUY"
     ) {
 
       reasons.push(
@@ -1830,8 +1896,7 @@ function buildSignal(
 
     if (
       symbol === "XAU/USD" &&
-      goldAlignment ===
-      "BUY"
+      goldAlignment === "BUY"
     ) {
 
       reasons.push(
@@ -1866,8 +1931,7 @@ function buildSignal(
 
     if (
       symbol === "XAU/USD" &&
-      goldTrendDirection ===
-      "SELL"
+      goldTrendDirection === "SELL"
     ) {
 
       reasons.push(
@@ -1878,8 +1942,7 @@ function buildSignal(
 
     if (
       symbol === "XAU/USD" &&
-      goldAlignment ===
-      "SELL"
+      goldAlignment === "SELL"
     ) {
 
       reasons.push(
@@ -1890,10 +1953,13 @@ function buildSignal(
 
 
   // ==========================================================
-  // REJECTED
+  // NO SIGNAL
   // ==========================================================
 
   if (!direction) {
+
+    let reason =
+      "NO_DIRECTION_CONFIRMED";
 
     if (
       finalBuyScore <
@@ -1902,7 +1968,7 @@ function buildSignal(
       CONFIG.minScore
     ) {
 
-      rejectionReason =
+      reason =
         "SCORE_BELOW_MINIMUM";
 
     } else if (
@@ -1910,13 +1976,8 @@ function buildSignal(
       CONFIG.minScoreGap
     ) {
 
-      rejectionReason =
+      reason =
         "BUY_SELL_GAP_TOO_SMALL";
-
-    } else {
-
-      rejectionReason =
-        "NO_DIRECTION_CONFIRMED";
     }
 
 
@@ -1927,8 +1988,7 @@ function buildSignal(
         symbol,
         status: "REJECTED",
 
-        reason:
-          rejectionReason,
+        reason,
 
         buyScore:
           finalBuyScore,
@@ -1945,12 +2005,6 @@ function buildSignal(
         requiredGap:
           CONFIG.minScoreGap,
 
-        rawBuyScore:
-          buyRaw,
-
-        rawSellScore:
-          sellRaw,
-
         price15m:
           analysis15.price,
 
@@ -1966,8 +2020,23 @@ function buildSignal(
         adx1h:
           analysis1h.adx,
 
-        atr15m:
-          analysis15.atr,
+        plusDI15m:
+          analysis15.plusDI,
+
+        minusDI15m:
+          analysis15.minusDI,
+
+        plusDI1h:
+          analysis1h.plusDI,
+
+        minusDI1h:
+          analysis1h.minusDI,
+
+        trend15m:
+          analysis15.adxDirection,
+
+        trend1h:
+          analysis1h.adxDirection,
 
         goldTrendDirection:
           symbol === "XAU/USD"
@@ -2019,7 +2088,6 @@ function buildSignal(
       diagnostics: {
         symbol,
         status: "REJECTED",
-
         reason:
           "INVALID_PRICE_OR_ATR",
 
@@ -2050,7 +2118,6 @@ function buildSignal(
       diagnostics: {
         symbol,
         status: "REJECTED",
-
         reason:
           "ATR_TOO_LOW",
 
@@ -2069,7 +2136,7 @@ function buildSignal(
 
 
   // ==========================================================
-  // RISK / REWARD
+  // SL / TP
   // ==========================================================
 
   const risk =
@@ -2081,9 +2148,7 @@ function buildSignal(
   let tp2;
 
 
-  if (
-    direction === "BUY"
-  ) {
+  if (direction === "BUY") {
 
     stopLoss =
       entry - risk;
@@ -2119,10 +2184,11 @@ function buildSignal(
 
 
   // ==========================================================
-  // FINAL SIGNAL
+  // SIGNAL
   // ==========================================================
 
   const signal = {
+
     symbol,
 
     direction,
@@ -2156,6 +2222,7 @@ function buildSignal(
     reasons,
 
     analysis: {
+
       signal15m:
         analysis15,
 
@@ -2175,7 +2242,19 @@ function buildSignal(
                 analysis15.adx,
 
               adx1h:
-                analysis1h.adx
+                analysis1h.adx,
+
+              plusDI15m:
+                analysis15.plusDI,
+
+              minusDI15m:
+                analysis15.minusDI,
+
+              plusDI1h:
+                analysis1h.plusDI,
+
+              minusDI1h:
+                analysis1h.minusDI
             }
           : null
     }
@@ -2205,6 +2284,12 @@ function buildSignal(
         gap,
 
       atrPercent,
+
+      trend15m:
+        analysis15.adxDirection,
+
+      trend1h:
+        analysis1h.adxDirection,
 
       goldTrendDirection:
         symbol === "XAU/USD"
@@ -2386,9 +2471,7 @@ function formatPrice(value) {
 // TELEGRAM FORMAT
 // ============================================================
 
-function formatSignal(
-  signal
-) {
+function formatSignal(signal) {
 
   const emoji =
     signal.direction === "BUY"
@@ -2409,17 +2492,17 @@ ${signal.symbol}
 
 Direction: ${signal.direction}
 
-🔥 Strength: ${signal.score}/100
+Strength: ${signal.score}/100
 
 Entry: ${formatPrice(signal.entry)}
 
-🛑 Stop Loss:
+Stop Loss:
 ${formatPrice(signal.stopLoss)}
 
-🎯 TP1:
+TP1:
 ${formatPrice(signal.tp1)}
 
-🎯 TP2:
+TP2:
 ${formatPrice(signal.tp2)}
 
 Timeframe: ${signal.timeframe}
@@ -2428,7 +2511,9 @@ Confirmation: ${signal.confirmationTimeframe}
 Technical confirmations:
 ${reasons}
 
-Risk model: ${CONFIG.riskPercent}%`;
+Risk model: ${CONFIG.riskPercent}%
+
+Analytical signal only.`;
 }
 
 
@@ -2525,9 +2610,7 @@ async function runEngine(env) {
 
 
   const openSignals =
-    await getOpenSignalCount(
-      env
-    );
+    await getOpenSignalCount(env);
 
 
   const diagnostics = [];
@@ -2549,13 +2632,16 @@ async function runEngine(env) {
       message:
         "Maximum open signals reached",
       diagnostics: [],
+      errors: [],
+      prioritySymbol:
+        "XAU/USD",
       time:
         new Date().toISOString()
     };
   }
 
 
-  // XAU/USD is always processed first.
+  // XAU/USD is ALWAYS first.
   for (
     const symbol
     of CONFIG.symbols
@@ -2728,8 +2814,8 @@ VALUES
       minAtrPercent:
         CONFIG.minAtrPercent,
 
-      goldPriorityBonus:
-        CONFIG.goldPriorityBonus,
+      goldRequireAlignment:
+        CONFIG.goldRequireAlignment,
 
       goldMinAdx15:
         CONFIG.goldMinAdx15,
@@ -2867,6 +2953,9 @@ WHERE symbol = 'XAU/USD'`
 
     version: "V5.2",
 
+    prioritySymbol:
+      "XAU/USD",
+
     totalSignals:
       Number(total?.count || 0),
 
@@ -2999,7 +3088,7 @@ You are subscribed.
 
 XAU/USD is the priority market.
 
-Gold is analyzed using 15m + 1h confirmation.
+15m signal + 1h trend confirmation.
 
 Commands:
 
@@ -3050,6 +3139,16 @@ TP1: ${signal.tp1}
 TP2: ${signal.tp2}
 
 `;
+    }
+
+
+    if (
+      !result.results ||
+      result.results.length === 0
+    ) {
+
+      output +=
+        "No signals yet.";
     }
 
 
@@ -3210,7 +3309,6 @@ export default {
 
     try {
 
-      // HOME
       if (
         url.pathname === "/" ||
         url.pathname === ""
@@ -3222,7 +3320,6 @@ export default {
       }
 
 
-      // HEALTH
       if (
         url.pathname === "/health"
       ) {
@@ -3231,7 +3328,6 @@ export default {
       }
 
 
-      // ROBOTS
       if (
         url.pathname === "/robots.txt"
       ) {
@@ -3240,7 +3336,6 @@ export default {
       }
 
 
-      // SITEMAP
       if (
         url.pathname === "/sitemap.xml"
       ) {
@@ -3249,7 +3344,6 @@ export default {
       }
 
 
-      // MANUAL RUN
       if (
         url.pathname === "/run"
       ) {
@@ -3261,7 +3355,6 @@ export default {
       }
 
 
-      // SIGNALS
       if (
         url.pathname ===
         "/api/signals"
@@ -3271,7 +3364,6 @@ export default {
       }
 
 
-      // STATS
       if (
         url.pathname ===
         "/api/stats"
@@ -3281,7 +3373,6 @@ export default {
       }
 
 
-      // TELEGRAM
       if (
         url.pathname ===
         "/telegram/webhook"
@@ -3294,7 +3385,6 @@ export default {
       }
 
 
-      // TELEGRAM SETUP
       if (
         url.pathname ===
         "/setup-chat"
