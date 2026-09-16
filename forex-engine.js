@@ -1,3 +1,9 @@
+// ============================================================
+// FOREX SIGNAL ENGINE — V2
+// Multi-Timeframe + EMA + RSI + MACD + ATR + ADX
+// Closed-candle confirmation + strict scoring + Telegram + D1
+// ============================================================
+
 const CONFIG = {
   symbols: [
     "EUR/USD",
@@ -12,8 +18,10 @@ const CONFIG = {
   candles15: 250,
   candles1h: 250,
 
-  minScore: 75,
+  // سخت‌گیری سیگنال
+  minScore: 80,
 
+  // ATR based risk
   atrMultiplier: 1.5,
 
   tp1R: 2,
@@ -23,65 +31,133 @@ const CONFIG = {
 
   cooldownMinutes: 60,
 
-  maxNewSignalsPerRun: 2,
-
+  maxNewSignalsPerRun: 1,
   maxOpenSignals: 2,
 
-  dailyLossLimitR: 2,
+  requestTimeoutMs: 15000,
 
-  requestTimeoutMs: 15000
+  // حداقل فاصله برای جلوگیری از بازار بدون حرکت
+  minAtrPercent15: {
+    "EUR/USD": 0.015,
+    "GBP/USD": 0.020,
+    "USD/JPY": 0.010,
+    "XAU/USD": 0.020
+  }
 };
 
 
 // ============================================================
-// MAIN FETCH
+// WORKER
 // ============================================================
 
 export default {
+
   async fetch(request, env, ctx) {
+
     try {
+
       const url = new URL(request.url);
       const path = url.pathname;
 
       await initDatabase(env);
 
-      if (request.method === "GET" && path === "/") {
+      // --------------------------------------------------------
+      // HOME
+      // --------------------------------------------------------
+
+      if (
+        request.method === "GET" &&
+        path === "/"
+      ) {
         return htmlResponse(homePage());
       }
 
-      if (request.method === "GET" && path === "/health") {
+      // --------------------------------------------------------
+      // HEALTH
+      // --------------------------------------------------------
+
+      if (
+        request.method === "GET" &&
+        path === "/health"
+      ) {
+
         return json({
           ok: true,
           service: "forex-signal-engine",
+          version: "V2",
           time: new Date().toISOString()
         });
       }
 
-      if (request.method === "GET" && path === "/robots.txt") {
+      // --------------------------------------------------------
+      // ROBOTS
+      // --------------------------------------------------------
+
+      if (
+        request.method === "GET" &&
+        path === "/robots.txt"
+      ) {
+
         return new Response(
-          "User-agent: *\nAllow: /\nSitemap: https://forex-signal-engine.hakima09360.workers.dev/sitemap.xml",
+          [
+            "User-agent: *",
+            "Allow: /",
+            "Sitemap: " +
+            url.origin +
+            "/sitemap.xml"
+          ].join("\n"),
           {
             headers: {
-              "content-type": "text/plain; charset=UTF-8"
+              "content-type":
+                "text/plain; charset=UTF-8"
             }
           }
         );
       }
 
-      if (request.method === "GET" && path === "/sitemap.xml") {
-        return new Response(sitemapXml(url.origin), {
-          headers: {
-            "content-type": "application/xml; charset=UTF-8"
+      // --------------------------------------------------------
+      // SITEMAP
+      // --------------------------------------------------------
+
+      if (
+        request.method === "GET" &&
+        path === "/sitemap.xml"
+      ) {
+
+        return new Response(
+          sitemapXml(url.origin),
+          {
+            headers: {
+              "content-type":
+                "application/xml; charset=UTF-8"
+            }
           }
-        });
+        );
       }
 
-      if (request.method === "GET" && path === "/setup-chat") {
+      // --------------------------------------------------------
+      // TELEGRAM SETUP
+      // --------------------------------------------------------
+
+      if (
+        request.method === "GET" &&
+        path === "/setup-chat"
+      ) {
+
         return await setupTelegramChat(env);
       }
 
-      if (request.method === "GET" && path === "/run") {
-        const result = await runEngine(env);
+      // --------------------------------------------------------
+      // MANUAL ENGINE RUN
+      // --------------------------------------------------------
+
+      if (
+        request.method === "GET" &&
+        path === "/run"
+      ) {
+
+        const result =
+          await runEngine(env);
 
         return json({
           ok: true,
@@ -89,52 +165,109 @@ export default {
         });
       }
 
-      if (request.method === "GET" && path === "/api/signals") {
-        const limit = Math.min(
-          Number(url.searchParams.get("limit") || 50),
-          200
-        );
+      // --------------------------------------------------------
+      // SIGNALS API
+      // --------------------------------------------------------
 
-        const result = await env.DB.prepare(`
-          SELECT *
-          FROM signals
-          ORDER BY created_at DESC
-          LIMIT ?
-        `).bind(limit).all();
+      if (
+        request.method === "GET" &&
+        path === "/api/signals"
+      ) {
+
+        const requestedLimit =
+          Number(
+            url.searchParams.get("limit") || 50
+          );
+
+        const limit =
+          Math.min(
+            Math.max(
+              Number.isFinite(requestedLimit)
+                ? requestedLimit
+                : 50,
+              1
+            ),
+            200
+          );
+
+        const result =
+          await env.DB.prepare(`
+            SELECT *
+            FROM signals
+            ORDER BY created_at DESC
+            LIMIT ?
+          `)
+          .bind(limit)
+          .all();
 
         return json({
           ok: true,
-          signals: result.results || []
+          signals:
+            result.results || []
         });
       }
 
-      if (request.method === "GET" && path === "/api/stats") {
+      // --------------------------------------------------------
+      // STATS
+      // --------------------------------------------------------
+
+      if (
+        request.method === "GET" &&
+        path === "/api/stats"
+      ) {
+
         return await getStats(env);
       }
+
+      // --------------------------------------------------------
+      // TELEGRAM WEBHOOK
+      // --------------------------------------------------------
 
       if (
         request.method === "POST" &&
         path === "/telegram/webhook"
       ) {
-        return await telegramWebhook(request, env);
+
+        return await telegramWebhook(
+          request,
+          env
+        );
       }
 
-      return new Response("Not Found", {
-        status: 404
-      });
+      return new Response(
+        "Not Found",
+        {
+          status: 404
+        }
+      );
 
     } catch (error) {
+
       console.error(error);
 
-      return json({
-        ok: false,
-        error: String(error?.message || error)
-      }, 500);
+      return json(
+        {
+          ok: false,
+          error:
+            String(
+              error?.message || error
+            )
+        },
+        500
+      );
     }
   },
 
+
+  // ==========================================================
+  // CRON
+  // ==========================================================
+
   async scheduled(event, env, ctx) {
-    ctx.waitUntil(runEngine(env));
+
+    ctx.waitUntil(
+      runEngine(env)
+    );
   }
 };
 
@@ -144,6 +277,12 @@ export default {
 // ============================================================
 
 async function initDatabase(env) {
+
+  if (!env.DB) {
+    throw new Error(
+      "D1 binding DB is missing"
+    );
+  }
 
   await env.DB.exec(`
     CREATE TABLE IF NOT EXISTS settings (
@@ -161,21 +300,30 @@ async function initDatabase(env) {
 
     CREATE TABLE IF NOT EXISTS signals (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
+
       symbol TEXT NOT NULL,
       direction TEXT NOT NULL,
       timeframe TEXT NOT NULL,
+
       score INTEGER NOT NULL,
+
       entry REAL NOT NULL,
       stop_loss REAL NOT NULL,
       tp1 REAL NOT NULL,
       tp2 REAL NOT NULL,
+
       initial_r REAL NOT NULL,
+
       status TEXT DEFAULT 'ACTIVE',
+
       tp1_hit INTEGER DEFAULT 0,
       tp2_hit INTEGER DEFAULT 0,
+
       breakeven_applied INTEGER DEFAULT 0,
+
       result_r REAL DEFAULT NULL,
       exit_price REAL DEFAULT NULL,
+
       created_at TEXT DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
       closed_at TEXT DEFAULT NULL
@@ -183,10 +331,15 @@ async function initDatabase(env) {
 
     CREATE TABLE IF NOT EXISTS signal_events (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
+
       signal_id INTEGER NOT NULL,
+
       event_type TEXT NOT NULL,
+
       price REAL,
+
       note TEXT,
+
       created_at TEXT DEFAULT CURRENT_TIMESTAMP
     );
 
@@ -206,46 +359,81 @@ async function initDatabase(env) {
 
 
 // ============================================================
-// ENGINE
+// MAIN ENGINE
 // ============================================================
 
 async function runEngine(env) {
 
-  const started = Date.now();
+  const started =
+    Date.now();
 
   const result = {
-    startedAt: new Date().toISOString(),
+
+    version: "V2",
+
+    startedAt:
+      new Date().toISOString(),
+
     scanned: 0,
+
     created: 0,
+
     skipped: 0,
+
     errors: []
   };
 
   try {
+
     await updateOpenSignals(env);
+
   } catch (error) {
+
     result.errors.push(
       "updateOpenSignals: " +
-      String(error?.message || error)
+      String(
+        error?.message || error
+      )
     );
   }
 
-  const openCountResult = await env.DB.prepare(`
-    SELECT COUNT(*) AS count
-    FROM signals
-    WHERE status IN ('ACTIVE','TP1_HIT')
-  `).first();
+
+  const openCountResult =
+    await env.DB.prepare(`
+      SELECT COUNT(*) AS count
+      FROM signals
+      WHERE status IN ('ACTIVE','TP1_HIT')
+    `)
+    .first();
+
 
   let openCount =
-    Number(openCountResult?.count || 0);
+    Number(
+      openCountResult?.count || 0
+    );
 
-  if (openCount >= CONFIG.maxOpenSignals) {
-    result.finishedAt = new Date().toISOString();
-    result.durationMs = Date.now() - started;
+
+  if (
+    openCount >=
+    CONFIG.maxOpenSignals
+  ) {
+
+    result.reason =
+      "Maximum open signals reached";
+
+    result.finishedAt =
+      new Date().toISOString();
+
+    result.durationMs =
+      Date.now() - started;
+
     return result;
   }
 
-  for (const symbol of CONFIG.symbols) {
+
+  for (
+    const symbol of CONFIG.symbols
+  ) {
 
     if (
       result.created >=
@@ -254,17 +442,26 @@ async function runEngine(env) {
       break;
     }
 
+
     result.scanned++;
+
 
     try {
 
       const candidate =
-        await analyzeSymbol(symbol, env);
+        await analyzeSymbol(
+          symbol,
+          env
+        );
+
 
       if (!candidate) {
+
         result.skipped++;
+
         continue;
       }
+
 
       const cooldown =
         await isInCooldown(
@@ -273,28 +470,46 @@ async function runEngine(env) {
           candidate.direction
         );
 
+
       if (cooldown) {
+
         result.skipped++;
+
         continue;
       }
+
 
       const alreadyOpen =
-        await hasOpenSignal(env, symbol);
+        await hasOpenSignal(
+          env,
+          symbol
+        );
+
 
       if (alreadyOpen) {
+
         result.skipped++;
+
         continue;
       }
 
-      await createSignal(env, candidate);
+
+      await createSignal(
+        env,
+        candidate
+      );
+
 
       await sendTelegram(
         env,
         formatNewSignal(candidate)
       );
 
+
       result.created++;
+
       openCount++;
+
 
       if (
         openCount >=
@@ -305,13 +520,21 @@ async function runEngine(env) {
 
     } catch (error) {
 
+      console.error(
+        symbol,
+        error
+      );
+
       result.errors.push(
         symbol +
         ": " +
-        String(error?.message || error)
+        String(
+          error?.message || error
+        )
       );
     }
   }
+
 
   result.finishedAt =
     new Date().toISOString();
@@ -319,15 +542,19 @@ async function runEngine(env) {
   result.durationMs =
     Date.now() - started;
 
+
   return result;
 }
 
 
 // ============================================================
-// MARKET ANALYSIS
+// ANALYZE SYMBOL
 // ============================================================
 
-async function analyzeSymbol(symbol, env) {
+async function analyzeSymbol(
+  symbol,
+  env
+) {
 
   const candles15 =
     await getCandles(
@@ -337,6 +564,7 @@ async function analyzeSymbol(symbol, env) {
       CONFIG.candles15
     );
 
+
   const candles1h =
     await getCandles(
       env,
@@ -345,6 +573,7 @@ async function analyzeSymbol(symbol, env) {
       CONFIG.candles1h
     );
 
+
   if (
     candles15.length < 210 ||
     candles1h.length < 210
@@ -352,295 +581,679 @@ async function analyzeSymbol(symbol, env) {
     return null;
   }
 
+
+  // ----------------------------------------------------------
+  // IMPORTANT:
+  // Use the LAST CLOSED candle.
+  // Ignore the currently forming candle.
+  // ----------------------------------------------------------
+
+  const signal15 =
+    candles15.length - 2;
+
+  const signal1h =
+    candles1h.length - 2;
+
+
   const close15 =
-    candles15.map(x => x.close);
+    candles15.map(
+      x => x.close
+    );
+
 
   const close1h =
-    candles1h.map(x => x.close);
+    candles1h.map(
+      x => x.close
+    );
+
 
   const ema20 =
-    EMA(close15, 20);
+    EMA(
+      close15,
+      20
+    );
 
   const ema50 =
-    EMA(close15, 50);
+    EMA(
+      close15,
+      50
+    );
 
   const ema200 =
-    EMA(close15, 200);
+    EMA(
+      close15,
+      200
+    );
+
 
   const ema20_1h =
-    EMA(close1h, 20);
+    EMA(
+      close1h,
+      20
+    );
 
   const ema50_1h =
-    EMA(close1h, 50);
+    EMA(
+      close1h,
+      50
+    );
 
   const ema200_1h =
-    EMA(close1h, 200);
+    EMA(
+      close1h,
+      200
+    );
+
 
   const rsi =
-    RSI(close15, 14);
+    RSI(
+      close15,
+      14
+    );
+
 
   const macd =
-    MACD(close15);
+    MACD(
+      close15
+    );
+
 
   const atr =
-    ATR(candles15, 14);
+    ATR(
+      candles15,
+      14
+    );
+
+
+  const adx =
+    ADX(
+      candles15,
+      14
+    );
+
 
   const last =
-    candles15[candles15.length - 1];
+    candles15[
+      signal15
+    ];
+
 
   const previous =
-    candles15[candles15.length - 2];
+    candles15[
+      signal15 - 1
+    ];
+
+
+  const previous2 =
+    candles15[
+      signal15 - 2
+    ];
+
 
   const price =
     last.close;
 
+
   const atrValue =
-    atr[atr.length - 1];
+    atr[signal15];
+
+
+  const currentEma20 =
+    ema20[signal15];
+
+  const currentEma50 =
+    ema50[signal15];
+
+  const currentEma200 =
+    ema200[signal15];
+
+
+  const h1Ema20 =
+    ema20_1h[signal1h];
+
+  const h1Ema50 =
+    ema50_1h[signal1h];
+
+  const h1Ema200 =
+    ema200_1h[signal1h];
+
+
+  const currentRsi =
+    rsi[signal15];
+
+
+  const currentMacd =
+    macd.macd[signal15];
+
+  const currentSignal =
+    macd.signal[signal15];
+
+
+  const currentAdx =
+    adx.adx[signal15];
+
 
   if (
-    !Number.isFinite(price) ||
-    !Number.isFinite(atrValue) ||
-    atrValue <= 0
+    ![
+      price,
+      atrValue,
+      currentEma20,
+      currentEma50,
+      currentEma200,
+      h1Ema20,
+      h1Ema50,
+      h1Ema200,
+      currentRsi,
+      currentMacd,
+      currentSignal,
+      currentAdx
+    ].every(
+      Number.isFinite
+    )
   ) {
     return null;
   }
 
-  const currentEma20 =
-    ema20[ema20.length - 1];
 
-  const currentEma50 =
-    ema50[ema50.length - 1];
+  // ----------------------------------------------------------
+  // ATR FILTER
+  // ----------------------------------------------------------
 
-  const currentEma200 =
-    ema200[ema200.length - 1];
+  const atrPercent =
+    (
+      atrValue /
+      Math.abs(price)
+    ) * 100;
 
-  const h1Ema20 =
-    ema20_1h[ema20_1h.length - 1];
 
-  const h1Ema50 =
-    ema50_1h[ema50_1h.length - 1];
+  const minAtr =
+    CONFIG.minAtrPercent15[
+      symbol
+    ] || 0;
 
-  const h1Ema200 =
-    ema200_1h[ema200_1h.length - 1];
 
-  const currentRsi =
-    rsi[rsi.length - 1];
+  if (
+    atrPercent <
+    minAtr
+  ) {
+    return null;
+  }
 
-  const currentMacd =
-    macd.macd[macd.macd.length - 1];
 
-  const currentSignal =
-    macd.signal[macd.signal.length - 1];
+  // ----------------------------------------------------------
+  // SCORES
+  // ----------------------------------------------------------
 
   let longScore = 0;
   let shortScore = 0;
 
+
+  // ----------------------------------------------------------
+  // 15M TREND — 25
+  // ----------------------------------------------------------
+
   if (
-    price > currentEma20 &&
-    currentEma20 > currentEma50 &&
-    currentEma50 > currentEma200
+    price >
+    currentEma20 &&
+    currentEma20 >
+    currentEma50 &&
+    currentEma50 >
+    currentEma200
   ) {
+
     longScore += 25;
   }
 
+
   if (
-    price < currentEma20 &&
-    currentEma20 < currentEma50 &&
-    currentEma50 < currentEma200
+    price <
+    currentEma20 &&
+    currentEma20 <
+    currentEma50 &&
+    currentEma50 <
+    currentEma200
   ) {
+
     shortScore += 25;
   }
 
-  if (
-    h1Ema20 > h1Ema50 &&
-    h1Ema50 > h1Ema200
-  ) {
-    longScore += 20;
-  }
+
+  // ----------------------------------------------------------
+  // 1H TREND — 25
+  // ----------------------------------------------------------
 
   if (
-    h1Ema20 < h1Ema50 &&
-    h1Ema50 < h1Ema200
+    h1Ema20 >
+    h1Ema50 &&
+    h1Ema50 >
+    h1Ema200
   ) {
-    shortScore += 20;
+
+    longScore += 25;
   }
 
+
   if (
-    currentRsi >= 50 &&
+    h1Ema20 <
+    h1Ema50 &&
+    h1Ema50 <
+    h1Ema200
+  ) {
+
+    shortScore += 25;
+  }
+
+
+  // ----------------------------------------------------------
+  // RSI — 10
+  // ----------------------------------------------------------
+
+  if (
+    currentRsi >= 52 &&
     currentRsi <= 68
   ) {
-    longScore += 15;
-  }
 
-  if (
-    currentRsi <= 50 &&
-    currentRsi >= 32
-  ) {
-    shortScore += 15;
-  }
-
-  if (
-    currentMacd > currentSignal
-  ) {
-    longScore += 15;
-  }
-
-  if (
-    currentMacd < currentSignal
-  ) {
-    shortScore += 15;
-  }
-
-  if (
-    last.close > previous.close
-  ) {
     longScore += 10;
   }
 
+
   if (
-    last.close < previous.close
+    currentRsi <= 48 &&
+    currentRsi >= 32
   ) {
+
     shortScore += 10;
   }
 
+
+  // ----------------------------------------------------------
+  // MACD — 10
+  // ----------------------------------------------------------
+
+  if (
+    currentMacd >
+    currentSignal
+  ) {
+
+    longScore += 10;
+  }
+
+
+  if (
+    currentMacd <
+    currentSignal
+  ) {
+
+    shortScore += 10;
+  }
+
+
+  // ----------------------------------------------------------
+  // ADX — 10
+  // Strong trend confirmation
+  // ----------------------------------------------------------
+
+  if (
+    currentAdx >= 20
+  ) {
+
+    if (
+      longScore >
+      shortScore
+    ) {
+      longScore += 10;
+    }
+
+    if (
+      shortScore >
+      longScore
+    ) {
+      shortScore += 10;
+    }
+  }
+
+
+  // ----------------------------------------------------------
+  // CANDLE MOMENTUM — 5
+  // ----------------------------------------------------------
+
+  const candleRange =
+    last.high -
+    last.low;
+
+
+  const candleBody =
+    Math.abs(
+      last.close -
+      last.open
+    );
+
+
+  const bodyRatio =
+    candleRange > 0
+      ? candleBody /
+        candleRange
+      : 0;
+
+
+  if (
+    bodyRatio >= 0.55 &&
+    last.close >
+    last.open
+  ) {
+
+    longScore += 5;
+  }
+
+
+  if (
+    bodyRatio >= 0.55 &&
+    last.close <
+    last.open
+  ) {
+
+    shortScore += 5;
+  }
+
+
+  // ----------------------------------------------------------
+  // SHORT-TERM MOMENTUM — 5
+  // ----------------------------------------------------------
+
+  if (
+    last.close >
+    previous.close &&
+    previous.close >=
+    previous2.close
+  ) {
+
+    longScore += 5;
+  }
+
+
+  if (
+    last.close <
+    previous.close &&
+    previous.close <=
+    previous2.close
+  ) {
+
+    shortScore += 5;
+  }
+
+
+  // ----------------------------------------------------------
+  // BREAKOUT CONFIRMATION — 10
+  // ----------------------------------------------------------
+
   const recent =
     candles15.slice(
-      Math.max(0, candles15.length - 21),
-      candles15.length - 1
+      Math.max(
+        0,
+        signal15 - 20
+      ),
+      signal15
     );
+
 
   const recentHigh =
     Math.max(
-      ...recent.map(x => x.high)
+      ...recent.map(
+        x => x.high
+      )
     );
+
 
   const recentLow =
     Math.min(
-      ...recent.map(x => x.low)
+      ...recent.map(
+        x => x.low
+      )
     );
 
-  if (price > recentHigh) {
-    longScore += 15;
+
+  if (
+    price >
+    recentHigh
+  ) {
+
+    longScore += 10;
   }
 
-  if (price < recentLow) {
-    shortScore += 15;
+
+  if (
+    price <
+    recentLow
+  ) {
+
+    shortScore += 10;
   }
+
+
+  // ----------------------------------------------------------
+  // DIRECTION
+  // ----------------------------------------------------------
 
   let direction;
   let score;
 
+
   if (
-    longScore >= shortScore
+    longScore >
+    shortScore
   ) {
+
     direction = "LONG";
     score = longScore;
+
   } else {
+
     direction = "SHORT";
     score = shortScore;
   }
 
+
+  // ----------------------------------------------------------
+  // MINIMUM SCORE
+  // ----------------------------------------------------------
+
   if (
-    score < CONFIG.minScore
+    score <
+    CONFIG.minScore
   ) {
     return null;
   }
 
-  const bullishCandle =
-    last.close > last.open;
 
-  const bearishCandle =
-    last.close < last.open;
+  // ----------------------------------------------------------
+  // SCORE GAP
+  // Prevent ambiguous signals
+  // ----------------------------------------------------------
+
+  const scoreGap =
+    Math.abs(
+      longScore -
+      shortScore
+    );
+
+
+  if (
+    scoreGap < 15
+  ) {
+    return null;
+  }
+
+
+  // ----------------------------------------------------------
+  // CANDLE DIRECTION CONFIRMATION
+  // ----------------------------------------------------------
 
   if (
     direction === "LONG" &&
-    !bullishCandle
+    last.close <=
+    last.open
   ) {
     return null;
   }
+
 
   if (
     direction === "SHORT" &&
-    !bearishCandle
+    last.close >=
+    last.open
   ) {
     return null;
   }
 
+
+  // ----------------------------------------------------------
+  // RSI EXTREME FILTER
+  // ----------------------------------------------------------
+
+  if (
+    direction === "LONG" &&
+    currentRsi > 70
+  ) {
+    return null;
+  }
+
+
+  if (
+    direction === "SHORT" &&
+    currentRsi < 30
+  ) {
+    return null;
+  }
+
+
+  // ----------------------------------------------------------
+  // ATR RISK
+  // ----------------------------------------------------------
+
   const risk =
-    atrValue * CONFIG.atrMultiplier;
+    atrValue *
+    CONFIG.atrMultiplier;
+
+
+  if (
+    !Number.isFinite(risk) ||
+    risk <= 0
+  ) {
+    return null;
+  }
+
 
   const entry =
     price;
+
 
   let stopLoss;
   let tp1;
   let tp2;
 
-  if (direction === "LONG") {
+
+  if (
+    direction === "LONG"
+  ) {
 
     stopLoss =
-      entry - risk;
+      entry -
+      risk;
 
     tp1 =
       entry +
-      risk * CONFIG.tp1R;
+      risk *
+      CONFIG.tp1R;
 
     tp2 =
       entry +
-      risk * CONFIG.tp2R;
+      risk *
+      CONFIG.tp2R;
 
   } else {
 
     stopLoss =
-      entry + risk;
+      entry +
+      risk;
 
     tp1 =
       entry -
-      risk * CONFIG.tp1R;
+      risk *
+      CONFIG.tp1R;
 
     tp2 =
       entry -
-      risk * CONFIG.tp2R;
+      risk *
+      CONFIG.tp2R;
   }
 
+
   return {
+
     symbol,
+
     direction,
-    timeframe: CONFIG.signalInterval,
+
+    timeframe:
+      CONFIG.signalInterval,
+
     score,
 
-    entry: roundPrice(
-      symbol,
-      entry
-    ),
+    longScore,
 
-    stopLoss: roundPrice(
-      symbol,
-      stopLoss
-    ),
+    shortScore,
 
-    tp1: roundPrice(
-      symbol,
-      tp1
-    ),
+    scoreGap,
 
-    tp2: roundPrice(
-      symbol,
-      tp2
-    ),
+    entry:
+      roundPrice(
+        symbol,
+        entry
+      ),
 
-    initialR: roundPrice(
-      symbol,
-      risk
-    ),
+    stopLoss:
+      roundPrice(
+        symbol,
+        stopLoss
+      ),
 
-    rsi: Number(
-      currentRsi.toFixed(2)
-    ),
+    tp1:
+      roundPrice(
+        symbol,
+        tp1
+      ),
 
-    atr: Number(
-      atrValue.toFixed(6)
-    )
+    tp2:
+      roundPrice(
+        symbol,
+        tp2
+      ),
+
+    initialR:
+      roundPrice(
+        symbol,
+        risk
+      ),
+
+    rsi:
+      Number(
+        currentRsi.toFixed(2)
+      ),
+
+    adx:
+      Number(
+        currentAdx.toFixed(2)
+      ),
+
+    atr:
+      Number(
+        atrValue.toFixed(6)
+      ),
+
+    atrPercent:
+      Number(
+        atrPercent.toFixed(4)
+      )
   };
 }
 
@@ -656,102 +1269,156 @@ async function getCandles(
   outputsize
 ) {
 
-  if (!env.TWELVE_DATA_API_KEY) {
+  if (
+    !env.TWELVE_DATA_API_KEY
+  ) {
+
     throw new Error(
       "TWELVE_DATA_API_KEY is missing"
     );
   }
+
 
   const url =
     new URL(
       "https://api.twelvedata.com/time_series"
     );
 
+
   url.searchParams.set(
     "symbol",
     symbol
   );
+
 
   url.searchParams.set(
     "interval",
     interval
   );
 
+
   url.searchParams.set(
     "outputsize",
     String(outputsize)
   );
+
 
   url.searchParams.set(
     "apikey",
     env.TWELVE_DATA_API_KEY
   );
 
+
   const response =
     await fetchWithTimeout(
       url.toString(),
       {
         method: "GET",
+
         headers: {
-          "accept": "application/json"
+          "accept":
+            "application/json"
         }
       },
+
       CONFIG.requestTimeoutMs
     );
 
-  if (!response.ok) {
+
+  if (
+    !response.ok
+  ) {
+
     throw new Error(
       "Twelve Data HTTP " +
       response.status
     );
   }
 
+
   const data =
     await response.json();
+
 
   if (
     data.status === "error"
   ) {
+
     throw new Error(
       data.message ||
       "Twelve Data error"
     );
   }
 
+
   if (
-    !Array.isArray(data.values)
+    !Array.isArray(
+      data.values
+    )
   ) {
+
     throw new Error(
       "No candle data returned for " +
       symbol
     );
   }
 
+
   return data.values
     .map(item => ({
-      time: item.datetime,
-      open: Number(item.open),
-      high: Number(item.high),
-      low: Number(item.low),
-      close: Number(item.close),
+
+      time:
+        item.datetime,
+
+      open:
+        Number(
+          item.open
+        ),
+
+      high:
+        Number(
+          item.high
+        ),
+
+      low:
+        Number(
+          item.low
+        ),
+
+      close:
+        Number(
+          item.close
+        ),
 
       volume:
         item.volume === undefined
           ? null
-          : Number(item.volume)
+          : Number(
+              item.volume
+            )
     }))
+
     .filter(item =>
-      Number.isFinite(item.open) &&
-      Number.isFinite(item.high) &&
-      Number.isFinite(item.low) &&
-      Number.isFinite(item.close)
+      Number.isFinite(
+        item.open
+      ) &&
+      Number.isFinite(
+        item.high
+      ) &&
+      Number.isFinite(
+        item.low
+      ) &&
+      Number.isFinite(
+        item.close
+      )
     )
+
     .reverse();
 }
 
 
 // ============================================================
-// SIGNAL CREATION
+// CREATE SIGNAL
 // ============================================================
 
 async function createSignal(
@@ -773,8 +1440,11 @@ async function createSignal(
         initial_r,
         status
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE')
-    `).bind(
+      VALUES (
+        ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE'
+      )
+    `)
+    .bind(
       candidate.symbol,
       candidate.direction,
       candidate.timeframe,
@@ -784,10 +1454,13 @@ async function createSignal(
       candidate.tp1,
       candidate.tp2,
       candidate.initialR
-    ).run();
+    )
+    .run();
+
 
   const signalId =
     result.meta?.last_row_id;
+
 
   if (signalId) {
 
@@ -799,12 +1472,15 @@ async function createSignal(
         note
       )
       VALUES (?, 'CREATED', ?, ?)
-    `).bind(
+    `)
+    .bind(
       signalId,
       candidate.entry,
-      "Signal created"
-    ).run();
+      "Strict V2 signal created"
+    )
+    .run();
   }
+
 
   return signalId;
 }
@@ -814,7 +1490,9 @@ async function createSignal(
 // OPEN SIGNAL MONITORING
 // ============================================================
 
-async function updateOpenSignals(env) {
+async function updateOpenSignals(
+  env
+) {
 
   const result =
     await env.DB.prepare(`
@@ -822,12 +1500,17 @@ async function updateOpenSignals(env) {
       FROM signals
       WHERE status IN ('ACTIVE','TP1_HIT')
       ORDER BY created_at ASC
-    `).all();
+    `)
+    .all();
+
 
   const signals =
     result.results || [];
 
-  for (const signal of signals) {
+
+  for (
+    const signal of signals
+  ) {
 
     try {
 
@@ -839,12 +1522,24 @@ async function updateOpenSignals(env) {
           5
         );
 
-      if (!candles.length) {
+
+      if (
+        !candles.length
+      ) {
         continue;
       }
 
+
+      // Current/latest price
       const price =
-        candles[candles.length - 1].close;
+        candles[
+          candles.length - 1
+        ].close;
+
+
+      // ------------------------------------------------------
+      // TP1
+      // ------------------------------------------------------
 
       if (
         signal.status === "ACTIVE" &&
@@ -865,7 +1560,12 @@ async function updateOpenSignals(env) {
             stop_loss = entry,
             updated_at = CURRENT_TIMESTAMP
           WHERE id = ?
-        `).bind(signal.id).run();
+        `)
+        .bind(
+          signal.id
+        )
+        .run();
+
 
         await env.DB.prepare(`
           INSERT INTO signal_events (
@@ -875,11 +1575,14 @@ async function updateOpenSignals(env) {
             note
           )
           VALUES (?, 'TP1_HIT', ?, ?)
-        `).bind(
+        `)
+        .bind(
           signal.id,
           price,
           "TP1 reached; stop moved to breakeven"
-        ).run();
+        )
+        .run();
+
 
         await sendTelegram(
           env,
@@ -887,12 +1590,18 @@ async function updateOpenSignals(env) {
             signal,
             "TP1 HIT",
             price,
-            "TP1 reached. Remaining position protected at breakeven."
+            "TP1 reached. Stop moved to breakeven."
           )
         );
 
+
         continue;
       }
+
+
+      // ------------------------------------------------------
+      // TP2
+      // ------------------------------------------------------
 
       if (
         (
@@ -909,6 +1618,7 @@ async function updateOpenSignals(env) {
         const resultR =
           CONFIG.tp2R;
 
+
         await closeSignal(
           env,
           signal,
@@ -918,18 +1628,25 @@ async function updateOpenSignals(env) {
           "TP2 reached"
         );
 
+
         await sendTelegram(
           env,
           formatEvent(
             signal,
             "TP2 HIT",
             price,
-            "Target 2 reached."
+            "TP2 reached."
           )
         );
 
+
         continue;
       }
+
+
+      // ------------------------------------------------------
+      // STOP LOSS
+      // ------------------------------------------------------
 
       if (
         stopReached(
@@ -944,6 +1661,7 @@ async function updateOpenSignals(env) {
             ? 0
             : -1;
 
+
         await closeSignal(
           env,
           signal,
@@ -954,6 +1672,7 @@ async function updateOpenSignals(env) {
             ? "Breakeven stop hit"
             : "Stop loss hit"
         );
+
 
         await sendTelegram(
           env,
@@ -1002,12 +1721,15 @@ async function closeSignal(
       updated_at = CURRENT_TIMESTAMP,
       closed_at = CURRENT_TIMESTAMP
     WHERE id = ?
-  `).bind(
+  `)
+  .bind(
     status,
     resultR,
     price,
     signal.id
-  ).run();
+  )
+  .run();
+
 
   await env.DB.prepare(`
     INSERT INTO signal_events (
@@ -1017,17 +1739,19 @@ async function closeSignal(
       note
     )
     VALUES (?, ?, ?, ?)
-  `).bind(
+  `)
+  .bind(
     signal.id,
     status,
     price,
     note
-  ).run();
+  )
+  .run();
 }
 
 
 // ============================================================
-// HELPERS
+// OPEN SIGNAL CHECK
 // ============================================================
 
 async function hasOpenSignal(
@@ -1042,11 +1766,18 @@ async function hasOpenSignal(
       WHERE symbol = ?
       AND status IN ('ACTIVE','TP1_HIT')
       LIMIT 1
-    `).bind(symbol).first();
+    `)
+    .bind(symbol)
+    .first();
+
 
   return Boolean(result);
 }
 
+
+// ============================================================
+// COOLDOWN
+// ============================================================
 
 async function isInCooldown(
   env,
@@ -1062,22 +1793,36 @@ async function isInCooldown(
       AND direction = ?
       ORDER BY created_at DESC
       LIMIT 1
-    `).bind(
+    `)
+    .bind(
       symbol,
       direction
-    ).first();
+    )
+    .first();
+
 
   if (!result) {
     return false;
   }
+
 
   const created =
     new Date(
       result.created_at
     ).getTime();
 
+
+  if (
+    !Number.isFinite(created)
+  ) {
+    return false;
+  }
+
+
   const age =
-    Date.now() - created;
+    Date.now() -
+    created;
+
 
   return (
     age <
@@ -1088,6 +1833,10 @@ async function isInCooldown(
 }
 
 
+// ============================================================
+// TARGET
+// ============================================================
+
 function reachedTarget(
   direction,
   price,
@@ -1097,12 +1846,22 @@ function reachedTarget(
   if (
     direction === "LONG"
   ) {
-    return price >= target;
+
+    return (
+      price >= target
+    );
   }
 
-  return price <= target;
+
+  return (
+    price <= target
+  );
 }
 
+
+// ============================================================
+// STOP
+// ============================================================
 
 function stopReached(
   direction,
@@ -1113,10 +1872,16 @@ function stopReached(
   if (
     direction === "LONG"
   ) {
-    return price <= stop;
+
+    return (
+      price <= stop
+    );
   }
 
-  return price >= stop;
+
+  return (
+    price >= stop
+  );
 }
 
 
@@ -1124,46 +1889,75 @@ function stopReached(
 // TELEGRAM SETUP
 // ============================================================
 
-async function setupTelegramChat(env) {
+async function setupTelegramChat(
+  env
+) {
 
-  if (!env.TELEGRAM_BOT_TOKEN) {
-    return json({
-      ok: false,
-      error: "TELEGRAM_BOT_TOKEN is missing"
-    }, 500);
+  if (
+    !env.TELEGRAM_BOT_TOKEN
+  ) {
+
+    return json(
+      {
+        ok: false,
+        error:
+          "TELEGRAM_BOT_TOKEN is missing"
+      },
+      500
+    );
   }
+
 
   const url =
     "https://api.telegram.org/bot" +
     env.TELEGRAM_BOT_TOKEN +
     "/getUpdates";
 
+
   const response =
-    await fetch(url);
+    await fetchWithTimeout(
+      url,
+      {},
+      CONFIG.requestTimeoutMs
+    );
+
 
   const data =
     await response.json();
 
-  if (!data.ok) {
-    return json({
-      ok: false,
-      telegram: data
-    }, 500);
+
+  if (
+    !data.ok
+  ) {
+
+    return json(
+      {
+        ok: false,
+        telegram: data
+      },
+      500
+    );
   }
+
 
   const updates =
     data.result || [];
 
-  let chatId = null;
+
+  let chatId =
+    null;
+
 
   for (
-    let i = updates.length - 1;
+    let i =
+      updates.length - 1;
     i >= 0;
     i--
   ) {
 
     const message =
       updates[i]?.message;
+
 
     if (
       message?.chat?.id
@@ -1178,24 +1972,33 @@ async function setupTelegramChat(env) {
     }
   }
 
+
   if (!chatId) {
 
-    return json({
-      ok: false,
-      message:
-        "No Telegram chat found. Open your bot in Telegram and send /start, then open /setup-chat again."
-    }, 400);
+    return json(
+      {
+        ok: false,
+        message:
+          "No Telegram chat found. Open your bot in Telegram and send /start, then open /setup-chat again."
+      },
+      400
+    );
   }
+
 
   await saveChatId(
     env,
     chatId
   );
 
+
   await sendTelegram(
     env,
-    "✅ اتصال موتور سیگنال فارکس برقرار شد.\n\nربات آماده دریافت سیگنال است."
+    "✅ اتصال موتور سیگنال فارکس برقرار شد.\n\n" +
+    "نسخه V2 فعال است.\n" +
+    "سیگنال‌ها با فیلتر چندتایم‌فریمی ارسال می‌شوند."
   );
+
 
   return json({
     ok: true,
@@ -1205,6 +2008,10 @@ async function setupTelegramChat(env) {
   });
 }
 
+
+// ============================================================
+// SAVE TELEGRAM CHAT
+// ============================================================
 
 async function saveChatId(
   env,
@@ -1221,7 +2028,10 @@ async function saveChatId(
     DO UPDATE SET
       value = excluded.value,
       updated_at = CURRENT_TIMESTAMP
-  `).bind(chatId).run();
+  `)
+  .bind(chatId)
+  .run();
+
 
   await env.DB.prepare(`
     INSERT INTO subscribers (
@@ -1232,7 +2042,9 @@ async function saveChatId(
     ON CONFLICT(chat_id)
     DO UPDATE SET
       active = 1
-  `).bind(chatId).run();
+  `)
+  .bind(chatId)
+  .run();
 }
 
 
@@ -1248,23 +2060,30 @@ async function telegramWebhook(
   const body =
     await request.json();
 
+
   const message =
     body?.message;
+
 
   const chatId =
     message?.chat?.id;
 
+
   if (chatId) {
+
     await saveChatId(
       env,
       String(chatId)
     );
   }
 
+
   const text =
     String(
       message?.text || ""
-    ).trim();
+    )
+    .trim();
+
 
   if (
     text === "/start" ||
@@ -1273,11 +2092,14 @@ async function telegramWebhook(
 
     await sendTelegram(
       env,
-      "🤖 Forex Signal Engine\n\n" +
-      "ربات فعال است.\n" +
-      "سیگنال‌ها پس از بررسی شرایط بازار ارسال می‌شوند."
+      "🤖 Forex Signal Engine V2\n\n" +
+      "ربات فعال است.\n\n" +
+      "سیگنال‌ها پس از بررسی روند 1H، " +
+      "روند 15M، EMA، RSI، MACD، ATR و ADX ارسال می‌شوند.\n\n" +
+      "⚠️ سود یا دقت ۱۰۰٪ تضمین نمی‌شود."
     );
   }
+
 
   return json({
     ok: true
@@ -1286,7 +2108,7 @@ async function telegramWebhook(
 
 
 // ============================================================
-// TELEGRAM SEND
+// SEND TELEGRAM
 // ============================================================
 
 async function sendTelegram(
@@ -1294,9 +2116,17 @@ async function sendTelegram(
   text
 ) {
 
-  if (!env.TELEGRAM_BOT_TOKEN) {
+  if (
+    !env.TELEGRAM_BOT_TOKEN
+  ) {
     return false;
   }
+
+
+  if (!env.DB) {
+    return false;
+  }
+
 
   const result =
     await env.DB.prepare(`
@@ -1304,58 +2134,97 @@ async function sendTelegram(
       FROM settings
       WHERE key = 'telegram_chat_id'
       LIMIT 1
-    `).first();
+    `)
+    .first();
 
-  if (!result?.value) {
+
+  if (
+    !result?.value
+  ) {
     return false;
   }
+
 
   const url =
     "https://api.telegram.org/bot" +
     env.TELEGRAM_BOT_TOKEN +
     "/sendMessage";
 
-  const response =
-    await fetch(url, {
-      method: "POST",
 
-      headers: {
-        "content-type":
-          "application/json"
-      },
+  try {
 
-      body: JSON.stringify({
-        chat_id: result.value,
-        text,
-        disable_web_page_preview: true
-      })
-    });
+    const response =
+      await fetchWithTimeout(
+        url,
+        {
+          method: "POST",
 
-  return response.ok;
+          headers: {
+            "content-type":
+              "application/json"
+          },
+
+          body:
+            JSON.stringify({
+              chat_id:
+                result.value,
+
+              text,
+
+              disable_web_page_preview:
+                true
+            })
+        },
+
+        CONFIG.requestTimeoutMs
+      );
+
+
+    return response.ok;
+
+  } catch (error) {
+
+    console.error(
+      "Telegram error:",
+      error
+    );
+
+    return false;
+  }
 }
 
 
 // ============================================================
-// TELEGRAM FORMAT
+// SIGNAL MESSAGE
 // ============================================================
 
-function formatNewSignal(signal) {
+function formatNewSignal(
+  signal
+) {
 
   const emoji =
     signal.direction === "LONG"
       ? "🟢"
       : "🔴";
 
+
+  const directionText =
+    signal.direction === "LONG"
+      ? "BUY / LONG"
+      : "SELL / SHORT";
+
+
   return (
+
     emoji +
-    " FOREX SIGNAL\n\n" +
+    " FOREX SIGNAL V2\n\n" +
 
     "📌 Symbol: " +
     signal.symbol +
     "\n" +
 
     "📈 Direction: " +
-    signal.direction +
+    directionText +
     "\n" +
 
     "⏱ Timeframe: " +
@@ -1364,7 +2233,15 @@ function formatNewSignal(signal) {
 
     "⭐ Score: " +
     signal.score +
-    "/100\n\n" +
+    "/100\n" +
+
+    "📊 Long: " +
+    signal.longScore +
+    "\n" +
+
+    "📊 Short: " +
+    signal.shortScore +
+    "\n\n" +
 
     "🎯 Entry: " +
     signal.entry +
@@ -1382,6 +2259,18 @@ function formatNewSignal(signal) {
     signal.tp2 +
     "\n\n" +
 
+    "📐 RSI: " +
+    signal.rsi +
+    "\n" +
+
+    "📐 ADX: " +
+    signal.adx +
+    "\n" +
+
+    "📐 ATR: " +
+    signal.atr +
+    "\n\n" +
+
     "⚠️ Risk per trade: " +
     CONFIG.riskPercent +
     "%\n\n" +
@@ -1391,6 +2280,10 @@ function formatNewSignal(signal) {
 }
 
 
+// ============================================================
+// EVENT MESSAGE
+// ============================================================
+
 function formatEvent(
   signal,
   title,
@@ -1399,15 +2292,16 @@ function formatEvent(
 ) {
 
   return (
+
     "📢 " +
     title +
     "\n\n" +
 
-    "📌 " +
+    "📌 Symbol: " +
     signal.symbol +
     "\n" +
 
-    "📈 " +
+    "📈 Direction: " +
     signal.direction +
     "\n\n" +
 
@@ -1424,75 +2318,110 @@ function formatEvent(
 // STATISTICS
 // ============================================================
 
-async function getStats(env) {
+async function getStats(
+  env
+) {
 
   const total =
     await env.DB.prepare(`
       SELECT COUNT(*) AS value
       FROM signals
-    `).first();
+    `)
+    .first();
+
 
   const wins =
     await env.DB.prepare(`
       SELECT COUNT(*) AS value
       FROM signals
       WHERE result_r > 0
-    `).first();
+    `)
+    .first();
+
 
   const losses =
     await env.DB.prepare(`
       SELECT COUNT(*) AS value
       FROM signals
       WHERE result_r < 0
-    `).first();
+    `)
+    .first();
+
 
   const closed =
     await env.DB.prepare(`
       SELECT COUNT(*) AS value
       FROM signals
       WHERE result_r IS NOT NULL
-    `).first();
+    `)
+    .first();
+
 
   const average =
     await env.DB.prepare(`
       SELECT AVG(result_r) AS value
       FROM signals
       WHERE result_r IS NOT NULL
-    `).first();
+    `)
+    .first();
+
 
   const sumR =
     await env.DB.prepare(`
       SELECT SUM(result_r) AS value
       FROM signals
       WHERE result_r IS NOT NULL
-    `).first();
+    `)
+    .first();
+
+
+  const closedCount =
+    Number(
+      closed?.value || 0
+    );
+
 
   const winRate =
-    Number(closed?.value || 0) > 0
+    closedCount > 0
+
       ? (
-          Number(wins?.value || 0) /
-          Number(closed?.value || 1)
+          Number(
+            wins?.value || 0
+          ) /
+          closedCount
         ) * 100
+
       : 0;
 
+
   return json({
+
     ok: true,
 
     stats: {
+
       totalSignals:
-        Number(total?.value || 0),
+        Number(
+          total?.value || 0
+        ),
 
       wins:
-        Number(wins?.value || 0),
+        Number(
+          wins?.value || 0
+        ),
 
       losses:
-        Number(losses?.value || 0),
+        Number(
+          losses?.value || 0
+        ),
 
       closed:
-        Number(closed?.value || 0),
+        closedCount,
 
       winRate:
-        Number(winRate.toFixed(2)),
+        Number(
+          winRate.toFixed(2)
+        ),
 
       averageR:
         Number(
@@ -1513,39 +2442,57 @@ async function getStats(env) {
 
 
 // ============================================================
-// TECHNICAL INDICATORS
+// EMA
 // ============================================================
 
-function EMA(values, period) {
+function EMA(
+  values,
+  period
+) {
 
   const result =
-    new Array(values.length)
-      .fill(null);
+    new Array(
+      values.length
+    )
+    .fill(null);
+
 
   if (
-    values.length < period
+    values.length <
+    period
   ) {
     return result;
   }
 
+
   let sum = 0;
+
 
   for (
     let i = 0;
     i < period;
     i++
   ) {
-    sum += values[i];
+
+    sum +=
+      values[i];
   }
+
 
   let previous =
     sum / period;
 
-  result[period - 1] =
+
+  result[
+    period - 1
+  ] =
     previous;
 
+
   const multiplier =
-    2 / (period + 1);
+    2 /
+    (period + 1);
+
 
   for (
     let i = period;
@@ -1561,28 +2508,43 @@ function EMA(values, period) {
       multiplier +
       previous;
 
+
     result[i] =
       previous;
   }
+
 
   return result;
 }
 
 
-function RSI(values, period) {
+// ============================================================
+// RSI
+// ============================================================
+
+function RSI(
+  values,
+  period
+) {
 
   const result =
-    new Array(values.length)
-      .fill(null);
+    new Array(
+      values.length
+    )
+    .fill(null);
+
 
   if (
-    values.length <= period
+    values.length <=
+    period
   ) {
     return result;
   }
 
+
   let gain = 0;
   let loss = 0;
+
 
   for (
     let i = 1;
@@ -1594,18 +2556,27 @@ function RSI(values, period) {
       values[i] -
       values[i - 1];
 
-    if (change > 0) {
+
+    if (
+      change > 0
+    ) {
+
       gain += change;
+
     } else {
+
       loss -= change;
     }
   }
 
+
   let avgGain =
     gain / period;
 
+
   let avgLoss =
     loss / period;
+
 
   result[period] =
     rsiValue(
@@ -1613,8 +2584,10 @@ function RSI(values, period) {
       avgLoss
     );
 
+
   for (
-    let i = period + 1;
+    let i =
+      period + 1;
     i < values.length;
     i++
   ) {
@@ -1623,15 +2596,18 @@ function RSI(values, period) {
       values[i] -
       values[i - 1];
 
+
     const currentGain =
       change > 0
         ? change
         : 0;
 
+
     const currentLoss =
       change < 0
         ? -change
         : 0;
+
 
     avgGain =
       (
@@ -1641,6 +2617,7 @@ function RSI(values, period) {
       ) /
       period;
 
+
     avgLoss =
       (
         avgLoss *
@@ -1649,6 +2626,7 @@ function RSI(values, period) {
       ) /
       period;
 
+
     result[i] =
       rsiValue(
         avgGain,
@@ -1656,9 +2634,14 @@ function RSI(values, period) {
       );
   }
 
+
   return result;
 }
 
+
+// ============================================================
+// RSI VALUE
+// ============================================================
 
 function rsiValue(
   avgGain,
@@ -1671,29 +2654,50 @@ function rsiValue(
     return 100;
   }
 
+
   const rs =
     avgGain /
     avgLoss;
 
-  return 100 -
+
+  return (
+    100 -
     (
       100 /
       (1 + rs)
-    );
+    )
+  );
 }
 
 
-function MACD(values) {
+// ============================================================
+// MACD
+// ============================================================
+
+function MACD(
+  values
+) {
 
   const ema12 =
-    EMA(values, 12);
+    EMA(
+      values,
+      12
+    );
+
 
   const ema26 =
-    EMA(values, 26);
+    EMA(
+      values,
+      26
+    );
+
 
   const macd =
-    new Array(values.length)
-      .fill(null);
+    new Array(
+      values.length
+    )
+    .fill(null);
+
 
   for (
     let i = 0;
@@ -1702,8 +2706,12 @@ function MACD(values) {
   ) {
 
     if (
-      ema12[i] !== null &&
-      ema26[i] !== null
+      Number.isFinite(
+        ema12[i]
+      ) &&
+      Number.isFinite(
+        ema26[i]
+      )
     ) {
 
       macd[i] =
@@ -1712,19 +2720,30 @@ function MACD(values) {
     }
   }
 
+
   const clean =
     macd.filter(
-      x => x !== null
+      x =>
+        Number.isFinite(x)
     );
 
+
   const signalClean =
-    EMA(clean, 9);
+    EMA(
+      clean,
+      9
+    );
+
 
   const signal =
-    new Array(values.length)
-      .fill(null);
+    new Array(
+      values.length
+    )
+    .fill(null);
+
 
   let index = 0;
+
 
   for (
     let i = 0;
@@ -1733,7 +2752,9 @@ function MACD(values) {
   ) {
 
     if (
-      macd[i] !== null
+      Number.isFinite(
+        macd[i]
+      )
     ) {
 
       signal[i] =
@@ -1743,6 +2764,7 @@ function MACD(values) {
     }
   }
 
+
   return {
     macd,
     signal
@@ -1750,14 +2772,21 @@ function MACD(values) {
 }
 
 
+// ============================================================
+// ATR
+// ============================================================
+
 function ATR(
   candles,
   period
 ) {
 
   const tr =
-    new Array(candles.length)
-      .fill(null);
+    new Array(
+      candles.length
+    )
+    .fill(null);
+
 
   for (
     let i = 0;
@@ -1765,7 +2794,9 @@ function ATR(
     i++
   ) {
 
-    if (i === 0) {
+    if (
+      i === 0
+    ) {
 
       tr[i] =
         candles[i].high -
@@ -1774,17 +2805,24 @@ function ATR(
       continue;
     }
 
+
     const high =
       candles[i].high;
+
 
     const low =
       candles[i].low;
 
+
     const previousClose =
-      candles[i - 1].close;
+      candles[
+        i - 1
+      ].close;
+
 
     tr[i] =
       Math.max(
+
         high - low,
 
         Math.abs(
@@ -1799,34 +2837,47 @@ function ATR(
       );
   }
 
+
   const result =
-    new Array(candles.length)
-      .fill(null);
+    new Array(
+      candles.length
+    )
+    .fill(null);
+
 
   if (
-    candles.length <= period
+    candles.length <=
+    period
   ) {
     return result;
   }
 
+
   let sum = 0;
+
 
   for (
     let i = 1;
     i <= period;
     i++
   ) {
-    sum += tr[i];
+
+    sum +=
+      tr[i];
   }
+
 
   let previous =
     sum / period;
 
+
   result[period] =
     previous;
 
+
   for (
-    let i = period + 1;
+    let i =
+      period + 1;
     i < candles.length;
     i++
   ) {
@@ -1839,11 +2890,294 @@ function ATR(
       ) /
       period;
 
+
     result[i] =
       previous;
   }
 
+
   return result;
+}
+
+
+// ============================================================
+// ADX
+// ============================================================
+
+function ADX(
+  candles,
+  period
+) {
+
+  const length =
+    candles.length;
+
+
+  const tr =
+    new Array(length)
+      .fill(null);
+
+
+  const plusDM =
+    new Array(length)
+      .fill(null);
+
+
+  const minusDM =
+    new Array(length)
+      .fill(null);
+
+
+  for (
+    let i = 1;
+    i < length;
+    i++
+  ) {
+
+    const high =
+      candles[i].high;
+
+
+    const low =
+      candles[i].low;
+
+
+    const previousHigh =
+      candles[
+        i - 1
+      ].high;
+
+
+    const previousLow =
+      candles[
+        i - 1
+      ].low;
+
+
+    const previousClose =
+      candles[
+        i - 1
+      ].close;
+
+
+    tr[i] =
+      Math.max(
+
+        high - low,
+
+        Math.abs(
+          high -
+          previousClose
+        ),
+
+        Math.abs(
+          low -
+          previousClose
+        )
+      );
+
+
+    const upMove =
+      high -
+      previousHigh;
+
+
+    const downMove =
+      previousLow -
+      low;
+
+
+    plusDM[i] =
+      (
+        upMove > downMove &&
+        upMove > 0
+      )
+        ? upMove
+        : 0;
+
+
+    minusDM[i] =
+      (
+        downMove > upMove &&
+        downMove > 0
+      )
+        ? downMove
+        : 0;
+  }
+
+
+  const adx =
+    new Array(length)
+      .fill(null);
+
+
+  const plusDI =
+    new Array(length)
+      .fill(null);
+
+
+  const minusDI =
+    new Array(length)
+      .fill(null);
+
+
+  if (
+    length <
+    period * 2
+  ) {
+
+    return {
+      adx,
+      plusDI,
+      minusDI
+    };
+  }
+
+
+  let trSum = 0;
+  let plusSum = 0;
+  let minusSum = 0;
+
+
+  for (
+    let i = 1;
+    i <= period;
+    i++
+  ) {
+
+    trSum +=
+      tr[i];
+
+    plusSum +=
+      plusDM[i];
+
+    minusSum +=
+      minusDM[i];
+  }
+
+
+  let dxValues = [];
+
+
+  for (
+    let i = period;
+    i < length;
+    i++
+  ) {
+
+    if (
+      i > period
+    ) {
+
+      trSum =
+        trSum -
+        trSum / period +
+        tr[i];
+
+
+      plusSum =
+        plusSum -
+        plusSum / period +
+        plusDM[i];
+
+
+      minusSum =
+        minusSum -
+        minusSum / period +
+        minusDM[i];
+    }
+
+
+    const pdi =
+      trSum > 0
+        ? 100 *
+          plusSum /
+          trSum
+        : 0;
+
+
+    const mdi =
+      trSum > 0
+        ? 100 *
+          minusSum /
+          trSum
+        : 0;
+
+
+    plusDI[i] =
+      pdi;
+
+
+    minusDI[i] =
+      mdi;
+
+
+    const denominator =
+      pdi + mdi;
+
+
+    const dx =
+      denominator > 0
+        ? 100 *
+          Math.abs(
+            pdi - mdi
+          ) /
+          denominator
+        : 0;
+
+
+    dxValues.push(dx);
+
+
+    if (
+      dxValues.length >=
+      period
+    ) {
+
+      if (
+        adx[i - 1] === null
+      ) {
+
+        let sumDX = 0;
+
+
+        for (
+          let j =
+            dxValues.length -
+            period;
+          j <
+            dxValues.length;
+          j++
+        ) {
+
+          sumDX +=
+            dxValues[j];
+        }
+
+
+        adx[i] =
+          sumDX /
+          period;
+
+      } else {
+
+        adx[i] =
+          (
+            adx[i - 1] *
+            (period - 1) +
+            dx
+          ) /
+          period;
+      }
+    }
+  }
+
+
+  return {
+    adx,
+    plusDI,
+    minusDI
+  };
 }
 
 
@@ -1859,18 +3193,22 @@ function roundPrice(
   if (
     symbol === "XAU/USD"
   ) {
+
     return Number(
       value.toFixed(2)
     );
   }
 
+
   if (
     symbol === "USD/JPY"
   ) {
+
     return Number(
       value.toFixed(3)
     );
   }
+
 
   return Number(
     value.toFixed(5)
@@ -1891,11 +3229,14 @@ async function fetchWithTimeout(
   const controller =
     new AbortController();
 
+
   const timer =
     setTimeout(
-      () => controller.abort(),
+      () =>
+        controller.abort(),
       timeout
     );
+
 
   try {
 
@@ -1916,7 +3257,7 @@ async function fetchWithTimeout(
 
 
 // ============================================================
-// JSON RESPONSE
+// JSON
 // ============================================================
 
 function json(
@@ -1934,6 +3275,7 @@ function json(
       status,
 
       headers: {
+
         "content-type":
           "application/json; charset=UTF-8",
 
@@ -1946,7 +3288,7 @@ function json(
 
 
 // ============================================================
-// HTML
+// HTML RESPONSE
 // ============================================================
 
 function htmlResponse(
@@ -1965,6 +3307,10 @@ function htmlResponse(
 }
 
 
+// ============================================================
+// HOME PAGE
+// ============================================================
+
 function homePage() {
 
   return `<!DOCTYPE html>
@@ -1975,100 +3321,18 @@ function homePage() {
 
 <meta charset="UTF-8">
 
-<meta name="viewport"
-content="width=device-width,initial-scale=1">
+<meta
+name="viewport"
+content="width=device-width,initial-scale=1"
+>
 
 <title>
-Forex Signal Engine | موتور سیگنال فارکس
+Forex Signal Engine V2 | موتور سیگنال فارکس
 </title>
 
 <meta
 name="description"
-content="موتور تحلیل و تولید سیگنال فارکس با بررسی روند، EMA، RSI، MACD و ATR."
+content="موتور تحلیل چندتایم‌فریمی بازار فارکس با EMA، RSI، MACD، ATR و ADX."
 >
 
-<meta name="robots"
-content="index,follow"
->
-
-<link
-rel="canonical"
-href="https://forex-signal-engine.hakima09360.workers.dev/"
->
-
-</head>
-
-<body
-style="
-font-family:Arial,sans-serif;
-max-width:900px;
-margin:40px auto;
-padding:20px;
-line-height:2;
-">
-
-<h1>
-📈 موتور سیگنال فارکس
-</h1>
-
-<p>
-سیستم تحلیل بازار فارکس با استفاده از داده‌های بازار،
-روندهای چند تایم‌فریمی و اندیکاتورهای تکنیکال.
-</p>
-
-<h2>
-ویژگی‌ها
-</h2>
-
-<ul>
-
-<li>EMA 20 / 50 / 200</li>
-
-<li>RSI</li>
-
-<li>MACD</li>
-
-<li>ATR</li>
-
-<li>تأیید روند 1H</li>
-
-<li>تحلیل تایم‌فریم 15 دقیقه</li>
-
-<li>مدیریت TP و SL</li>
-
-<li>ثبت عملکرد سیگنال‌ها</li>
-
-<li>ارسال اعلان تلگرام</li>
-
-</ul>
-
-<p>
-⚠️ هیچ سیستم معاملاتی نمی‌تواند سود یا دقت ۱۰۰٪ را تضمین کند.
-</p>
-
-</body>
-
-</html>`;
-}
-
-
-function sitemapXml(
-  origin
-) {
-
-  return `<?xml version="1.0" encoding="UTF-8"?>
-
-<urlset
-xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
->
-
-<url>
-<loc>${origin}/</loc>
-</url>
-
-<url>
-<loc>${origin}/health</loc>
-</url>
-
-</urlset>`;
-        }
+<meta
