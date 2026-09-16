@@ -1,8 +1,7 @@
 // ============================================================
-// FOREX SIGNAL ENGINE V3
-// Multi-Timeframe + EMA + RSI + MACD + ATR + ADX
-// Closed Candle Confirmation
+// FOREX SIGNAL ENGINE V4
 // Cloudflare Worker + D1 + Twelve Data + Telegram
+// Multi-Timeframe Forex Signal Engine
 // ============================================================
 
 const CONFIG = {
@@ -23,7 +22,6 @@ const CONFIG = {
   minScoreGap: 15,
 
   atrMultiplier: 1.5,
-
   tp1R: 2,
   tp2R: 3,
 
@@ -34,25 +32,25 @@ const CONFIG = {
   maxNewSignalsPerRun: 1,
   maxOpenSignals: 2,
 
-  rsiOverbought: 70,
-  rsiOversold: 30,
-
   minAtrPercent: 0.02
 };
 
 
 // ============================================================
-// RESPONSE HELPERS
+// RESPONSE
 // ============================================================
 
 function json(data, status = 200) {
-  return new Response(JSON.stringify(data, null, 2), {
-    status,
-    headers: {
-      "content-type": "application/json; charset=UTF-8",
-      "cache-control": "no-store"
+  return new Response(
+    JSON.stringify(data, null, 2),
+    {
+      status,
+      headers: {
+        "content-type": "application/json; charset=UTF-8",
+        "cache-control": "no-store"
+      }
     }
-  });
+  );
 }
 
 function html(body, status = 200) {
@@ -67,28 +65,20 @@ function html(body, status = 200) {
 
 
 // ============================================================
-// SECRET HELPERS
+// SECRETS
 // ============================================================
 
 function getTelegramToken(env) {
-  return (
-    env.TELEGRAM_BOT_TOKEN ||
-    env["توکن_ربات_تلگرام"] ||
-    ""
-  );
+  return env.TELEGRAM_BOT_TOKEN || "";
 }
 
 function getTwelveDataKey(env) {
-  return (
-    env.TWELVE_DATA_API_KEY ||
-    env["کلید API دوازده داده"] ||
-    ""
-  );
+  return env.TWELVE_DATA_API_KEY || "";
 }
 
 
 // ============================================================
-// HOME PAGE
+// HOME
 // ============================================================
 
 function homePage() {
@@ -97,83 +87,122 @@ function homePage() {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Forex Signal Engine V3</title>
-<meta name="description" content="Multi-timeframe forex signal engine with EMA, RSI, MACD, ATR and ADX analysis.">
+
+<title>Forex Signal Engine V4</title>
+
+<meta name="description"
+content="Multi-timeframe forex signal engine using EMA, RSI, MACD, ATR and ADX.">
+
 <style>
 body{
   margin:0;
-  font-family:Arial,sans-serif;
   background:#0b1220;
   color:#fff;
+  font-family:Arial,sans-serif;
 }
+
 .container{
   max-width:900px;
   margin:auto;
-  padding:30px 18px;
+  padding:25px 18px;
 }
+
 .card{
   background:#121c2e;
   border-radius:18px;
-  padding:24px;
-  margin:16px 0;
+  padding:22px;
+  margin-bottom:16px;
 }
-h1{font-size:30px}
-h2{font-size:20px}
+
+h1{
+  font-size:30px;
+}
+
+h2{
+  font-size:20px;
+}
+
 .badge{
   display:inline-block;
   padding:7px 12px;
   border-radius:20px;
   background:#1d3557;
 }
+
 a{
   color:#6db7ff;
   text-decoration:none;
 }
-code{
+
+.endpoint{
   background:#07101e;
-  padding:4px 7px;
-  border-radius:6px;
+  padding:10px;
+  border-radius:8px;
+  margin:8px 0;
 }
 </style>
 </head>
+
 <body>
+
 <div class="container">
 
 <div class="card">
-<h1>Forex Signal Engine V3</h1>
+<h1>Forex Signal Engine V4</h1>
 <p class="badge">Multi-Timeframe Signal Engine</p>
+
 <p>
 15-minute signal analysis with 1-hour confirmation.
 </p>
 </div>
 
 <div class="card">
-<h2>Analysis</h2>
+
+<h2>Technical Analysis</h2>
+
 <p>EMA 20 / 50 / 200</p>
-<p>RSI</p>
+<p>RSI 14</p>
 <p>MACD</p>
 <p>ATR</p>
 <p>ADX</p>
 <p>Momentum</p>
 <p>Breakout</p>
+
 </div>
 
 <div class="card">
-<h2>Endpoints</h2>
-<p><a href="/health">/health</a></p>
-<p><a href="/api/signals">/api/signals</a></p>
-<p><a href="/api/stats">/api/stats</a></p>
-<p><a href="/run">/run</a></p>
+
+<h2>API</h2>
+
+<div class="endpoint">
+<a href="/health">/health</a>
+</div>
+
+<div class="endpoint">
+<a href="/api/signals">/api/signals</a>
+</div>
+
+<div class="endpoint">
+<a href="/api/stats">/api/stats</a>
+</div>
+
+<div class="endpoint">
+<a href="/run">/run</a>
+</div>
+
 </div>
 
 <div class="card">
+
 <p>
-This service generates analytical signals.
-It does not guarantee profits and does not execute broker trades.
+This system generates analytical trading signals.
+It does not guarantee profit and does not execute broker trades.
 </p>
+
 </div>
 
 </div>
+
 </body>
 </html>`;
 }
@@ -184,6 +213,7 @@ It does not guarantee profits and does not execute broker trades.
 // ============================================================
 
 function robotsTxt() {
+
   return new Response(
 `User-agent: *
 Allow: /
@@ -191,7 +221,8 @@ Allow: /
 Sitemap: https://forex-signal-engine.hakima09360.workers.dev/sitemap.xml`,
     {
       headers: {
-        "content-type": "text/plain; charset=UTF-8"
+        "content-type":
+          "text/plain; charset=UTF-8"
       }
     }
   );
@@ -203,22 +234,30 @@ Sitemap: https://forex-signal-engine.hakima09360.workers.dev/sitemap.xml`,
 // ============================================================
 
 function sitemapXml() {
+
   return new Response(
 `<?xml version="1.0" encoding="UTF-8"?>
-<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-  <url>
-    <loc>https://forex-signal-engine.hakima09360.workers.dev/</loc>
-  </url>
-  <url>
-    <loc>https://forex-signal-engine.hakima09360.workers.dev/health</loc>
-  </url>
-  <url>
-    <loc>https://forex-signal-engine.hakima09360.workers.dev/api/signals</loc>
-  </url>
+
+<urlset
+xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+
+<url>
+<loc>https://forex-signal-engine.hakima09360.workers.dev/</loc>
+</url>
+
+<url>
+<loc>https://forex-signal-engine.hakima09360.workers.dev/health</loc>
+</url>
+
+<url>
+<loc>https://forex-signal-engine.hakima09360.workers.dev/api/signals</loc>
+</url>
+
 </urlset>`,
     {
       headers: {
-        "content-type": "application/xml; charset=UTF-8"
+        "content-type":
+          "application/xml; charset=UTF-8"
       }
     }
   );
@@ -226,63 +265,87 @@ function sitemapXml() {
 
 
 // ============================================================
-// D1 SCHEMA
+// D1 DATABASE INITIALIZATION
 // ============================================================
 
 async function ensureDatabase(env) {
+
   if (!env.DB) {
-    throw new Error("D1 binding DB is missing");
+    throw new Error(
+      "D1 binding DB is missing"
+    );
   }
 
-  const statements = [
+  // ----------------------------------------------------------
+  // SETTINGS
+  // ----------------------------------------------------------
 
-    `CREATE TABLE IF NOT EXISTS settings (
-      key TEXT PRIMARY KEY,
-      value TEXT,
-      updated_at TEXT NOT NULL
-    )`,
+  await env.DB.prepare(
+`CREATE TABLE IF NOT EXISTS settings (
+  key TEXT PRIMARY KEY,
+  value TEXT,
+  updated_at TEXT NOT NULL
+)`
+  ).run();
 
-    `CREATE TABLE IF NOT EXISTS subscribers (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      chat_id TEXT UNIQUE NOT NULL,
-      username TEXT,
-      active INTEGER NOT NULL DEFAULT 1,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
-    )`,
 
-    `CREATE TABLE IF NOT EXISTS signals (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      symbol TEXT NOT NULL,
-      direction TEXT NOT NULL,
-      score REAL NOT NULL,
-      confidence REAL,
-      entry REAL NOT NULL,
-      stop_loss REAL NOT NULL,
-      tp1 REAL NOT NULL,
-      tp2 REAL NOT NULL,
-      atr REAL,
-      timeframe TEXT NOT NULL,
-      confirmation_timeframe TEXT NOT NULL,
-      status TEXT NOT NULL DEFAULT 'OPEN',
-      reason TEXT,
-      created_at TEXT NOT NULL,
-      closed_at TEXT
-    )`,
+  // ----------------------------------------------------------
+  // SUBSCRIBERS
+  // ----------------------------------------------------------
 
-    `CREATE TABLE IF NOT EXISTS signal_events (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      signal_id INTEGER,
-      event TEXT NOT NULL,
-      price REAL,
-      details TEXT,
-      created_at TEXT NOT NULL
-    )`
-  ];
+  await env.DB.prepare(
+`CREATE TABLE IF NOT EXISTS subscribers (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  chat_id TEXT UNIQUE NOT NULL,
+  username TEXT,
+  active INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+)`
+  ).run();
 
-  for (const sql of statements) {
-    await env.DB.prepare(sql).run();
-  }
+
+  // ----------------------------------------------------------
+  // SIGNALS
+  // ----------------------------------------------------------
+
+  await env.DB.prepare(
+`CREATE TABLE IF NOT EXISTS signals (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  symbol TEXT NOT NULL,
+  direction TEXT NOT NULL,
+  score REAL NOT NULL,
+  confidence REAL,
+  entry REAL NOT NULL,
+  stop_loss REAL NOT NULL,
+  tp1 REAL NOT NULL,
+  tp2 REAL NOT NULL,
+  atr REAL,
+  timeframe TEXT NOT NULL,
+  confirmation_timeframe TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'OPEN',
+  reason TEXT,
+  created_at TEXT NOT NULL,
+  closed_at TEXT
+)`
+  ).run();
+
+
+  // ----------------------------------------------------------
+  // SIGNAL EVENTS
+  // ----------------------------------------------------------
+
+  await env.DB.prepare(
+`CREATE TABLE IF NOT EXISTS signal_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  signal_id INTEGER,
+  event TEXT NOT NULL,
+  price REAL,
+  details TEXT,
+  created_at TEXT NOT NULL
+)`
+  ).run();
+
 
   return true;
 }
@@ -293,20 +356,45 @@ async function ensureDatabase(env) {
 // ============================================================
 
 async function health(env) {
+
   if (!env.DB) {
+
     return json({
       ok: false,
       error: "D1 binding DB is missing"
     }, 500);
+
   }
 
-  return json({
-    ok: true,
-    service: "forex-signal-engine",
-    version: "V3",
-    database: "connected",
-    time: new Date().toISOString()
-  });
+  try {
+
+    await ensureDatabase(env);
+
+    const result =
+      await env.DB.prepare(
+        "SELECT 1 AS database_ok"
+      ).first();
+
+    return json({
+      ok: true,
+      service: "forex-signal-engine",
+      version: "V4",
+      database: result?.database_ok === 1
+        ? "connected"
+        : "error",
+      time: new Date().toISOString()
+    });
+
+  } catch (error) {
+
+    return json({
+      ok: false,
+      service: "forex-signal-engine",
+      version: "V4",
+      error: error?.message || String(error)
+    }, 500);
+
+  }
 }
 
 
@@ -314,42 +402,67 @@ async function health(env) {
 // TWELVE DATA
 // ============================================================
 
-async function getCandles(env, symbol, interval, outputsize = 250) {
+async function getCandles(
+  env,
+  symbol,
+  interval,
+  outputsize
+) {
 
-  const apiKey = getTwelveDataKey(env);
+  const apiKey =
+    getTwelveDataKey(env);
 
   if (!apiKey) {
-    throw new Error("TWELVE_DATA_API_KEY is missing");
+    throw new Error(
+      "TWELVE_DATA_API_KEY is missing"
+    );
   }
 
   const url =
     "https://api.twelvedata.com/time_series" +
-    "?symbol=" + encodeURIComponent(symbol) +
-    "&interval=" + encodeURIComponent(interval) +
-    "&outputsize=" + outputsize +
+    "?symbol=" +
+    encodeURIComponent(symbol) +
+    "&interval=" +
+    encodeURIComponent(interval) +
+    "&outputsize=" +
+    outputsize +
     "&format=JSON" +
-    "&apikey=" + encodeURIComponent(apiKey);
+    "&apikey=" +
+    encodeURIComponent(apiKey);
 
-  const response = await fetch(url);
+  const response =
+    await fetch(url);
 
   if (!response.ok) {
+
     throw new Error(
-      `Twelve Data HTTP ${response.status}`
+      "Twelve Data HTTP " +
+      response.status
     );
+
   }
 
-  const data = await response.json();
+  const data =
+    await response.json();
 
   if (data.status === "error") {
+
     throw new Error(
-      data.message || "Twelve Data API error"
+      data.message ||
+      "Twelve Data API error"
     );
+
   }
 
   if (!Array.isArray(data.values)) {
+
     throw new Error(
-      `No candle data returned for ${symbol} ${interval}`
+      "No candle data returned for " +
+      symbol +
+      " " +
+      interval
     );
+
   }
 
   return data.values
@@ -372,24 +485,42 @@ async function getCandles(env, symbol, interval, outputsize = 250) {
 
 
 // ============================================================
-// MATH HELPERS
+// SMA
 // ============================================================
 
 function sma(values, period) {
-  if (values.length < period) return null;
+
+  if (
+    !Array.isArray(values) ||
+    values.length < period
+  ) {
+    return null;
+  }
 
   let sum = 0;
 
-  for (let i = values.length - period; i < values.length; i++) {
+  for (
+    let i = values.length - period;
+    i < values.length;
+    i++
+  ) {
     sum += values[i];
   }
 
   return sum / period;
 }
 
+
+// ============================================================
+// EMA
+// ============================================================
+
 function emaSeries(values, period) {
 
-  if (values.length < period) {
+  if (
+    !Array.isArray(values) ||
+    values.length < period
+  ) {
     return [];
   }
 
@@ -397,77 +528,152 @@ function emaSeries(values, period) {
 
   let seed = 0;
 
-  for (let i = 0; i < period; i++) {
+  for (
+    let i = 0;
+    i < period;
+    i++
+  ) {
     seed += values[i];
   }
 
-  let prev = seed / period;
+  let previous =
+    seed / period;
 
-  result[period - 1] = prev;
+  result[period - 1] =
+    previous;
 
-  const multiplier = 2 / (period + 1);
+  const multiplier =
+    2 / (period + 1);
 
-  for (let i = period; i < values.length; i++) {
-    prev =
-      (values[i] - prev) * multiplier +
-      prev;
+  for (
+    let i = period;
+    i < values.length;
+    i++
+  ) {
 
-    result[i] = prev;
+    previous =
+      (
+        values[i] - previous
+      ) *
+      multiplier +
+      previous;
+
+    result[i] =
+      previous;
   }
 
   return result;
 }
 
+
 function ema(values, period) {
-  const series = emaSeries(values, period);
 
-  if (!series.length) return null;
+  const series =
+    emaSeries(
+      values,
+      period
+    );
 
-  return series[series.length - 1];
+  if (!series.length) {
+    return null;
+  }
+
+  return series[
+    series.length - 1
+  ];
 }
 
-function rsi(values, period = 14) {
 
-  if (values.length <= period) return null;
+// ============================================================
+// RSI
+// ============================================================
+
+function rsi(
+  values,
+  period = 14
+) {
+
+  if (
+    !Array.isArray(values) ||
+    values.length <= period
+  ) {
+    return null;
+  }
 
   let gains = 0;
   let losses = 0;
 
-  for (let i = 1; i <= period; i++) {
+  for (
+    let i = 1;
+    i <= period;
+    i++
+  ) {
 
-    const diff = values[i] - values[i - 1];
+    const difference =
+      values[i] -
+      values[i - 1];
 
-    if (diff >= 0) {
-      gains += diff;
+    if (difference >= 0) {
+      gains += difference;
     } else {
-      losses += Math.abs(diff);
+      losses +=
+        Math.abs(difference);
     }
   }
 
-  let avgGain = gains / period;
-  let avgLoss = losses / period;
+  let averageGain =
+    gains / period;
 
-  for (let i = period + 1; i < values.length; i++) {
+  let averageLoss =
+    losses / period;
 
-    const diff = values[i] - values[i - 1];
+  for (
+    let i = period + 1;
+    i < values.length;
+    i++
+  ) {
 
-    const gain = diff > 0 ? diff : 0;
-    const loss = diff < 0 ? Math.abs(diff) : 0;
+    const difference =
+      values[i] -
+      values[i - 1];
 
-    avgGain =
-      ((avgGain * (period - 1)) + gain) /
-      period;
+    const gain =
+      difference > 0
+        ? difference
+        : 0;
 
-    avgLoss =
-      ((avgLoss * (period - 1)) + loss) /
-      period;
+    const loss =
+      difference < 0
+        ? Math.abs(difference)
+        : 0;
+
+    averageGain =
+      (
+        averageGain *
+        (period - 1) +
+        gain
+      ) / period;
+
+    averageLoss =
+      (
+        averageLoss *
+        (period - 1) +
+        loss
+      ) / period;
   }
 
-  if (avgLoss === 0) return 100;
+  if (averageLoss === 0) {
+    return 100;
+  }
 
-  const rs = avgGain / avgLoss;
+  const rs =
+    averageGain /
+    averageLoss;
 
-  return 100 - (100 / (1 + rs));
+  return (
+    100 -
+    100 / (1 + rs)
+  );
 }
 
 
@@ -477,47 +683,70 @@ function rsi(values, period = 14) {
 
 function macd(values) {
 
-  const ema12 = emaSeries(values, 12);
-  const ema26 = emaSeries(values, 26);
+  const ema12 =
+    emaSeries(values, 12);
 
-  if (!ema12.length || !ema26.length) {
+  const ema26 =
+    emaSeries(values, 26);
+
+  if (
+    !ema12.length ||
+    !ema26.length
+  ) {
     return null;
   }
 
   const macdValues = [];
 
-  for (let i = 0; i < values.length; i++) {
+  for (
+    let i = 0;
+    i < values.length;
+    i++
+  ) {
 
     if (
       ema12[i] !== undefined &&
       ema26[i] !== undefined
     ) {
-      macdValues[i] =
-        ema12[i] - ema26[i];
+
+      macdValues.push(
+        ema12[i] -
+        ema26[i]
+      );
+
     }
+
   }
 
-  const clean = macdValues.filter(
-    x => Number.isFinite(x)
-  );
-
-  if (clean.length < 9) {
+  if (macdValues.length < 9) {
     return null;
   }
 
   const signalSeries =
-    emaSeries(clean, 9);
+    emaSeries(
+      macdValues,
+      9
+    );
+
+  if (!signalSeries.length) {
+    return null;
+  }
 
   const macdLine =
-    clean[clean.length - 1];
+    macdValues[
+      macdValues.length - 1
+    ];
 
   const signalLine =
-    signalSeries[signalSeries.length - 1];
+    signalSeries[
+      signalSeries.length - 1
+    ];
 
   return {
     macd: macdLine,
     signal: signalLine,
-    histogram: macdLine - signalLine
+    histogram:
+      macdLine - signalLine
   };
 }
 
@@ -526,38 +755,61 @@ function macd(values) {
 // ATR
 // ============================================================
 
-function atr(candles, period = 14) {
+function atr(
+  candles,
+  period = 14
+) {
 
-  if (candles.length <= period) {
+  if (
+    !Array.isArray(candles) ||
+    candles.length <= period
+  ) {
     return null;
   }
 
-  const tr = [];
+  const trueRanges = [];
 
-  for (let i = 1; i < candles.length; i++) {
+  for (
+    let i = 1;
+    i < candles.length;
+    i++
+  ) {
 
-    const current = candles[i];
-    const previous = candles[i - 1];
+    const current =
+      candles[i];
+
+    const previous =
+      candles[i - 1];
 
     const range1 =
-      current.high - current.low;
+      current.high -
+      current.low;
 
     const range2 =
       Math.abs(
-        current.high - previous.close
+        current.high -
+        previous.close
       );
 
     const range3 =
       Math.abs(
-        current.low - previous.close
+        current.low -
+        previous.close
       );
 
-    tr.push(
-      Math.max(range1, range2, range3)
+    trueRanges.push(
+      Math.max(
+        range1,
+        range2,
+        range3
+      )
     );
   }
 
-  return sma(tr, period);
+  return sma(
+    trueRanges,
+    period
+  );
 }
 
 
@@ -565,9 +817,15 @@ function atr(candles, period = 14) {
 // ADX
 // ============================================================
 
-function adx(candles, period = 14) {
+function adx(
+  candles,
+  period = 14
+) {
 
-  if (candles.length < period * 2 + 1) {
+  if (
+    candles.length <
+    period * 2 + 1
+  ) {
     return null;
   }
 
@@ -575,41 +833,67 @@ function adx(candles, period = 14) {
   const plusDM = [];
   const minusDM = [];
 
-  for (let i = 1; i < candles.length; i++) {
+  for (
+    let i = 1;
+    i < candles.length;
+    i++
+  ) {
 
-    const current = candles[i];
-    const previous = candles[i - 1];
+    const current =
+      candles[i];
+
+    const previous =
+      candles[i - 1];
 
     const upMove =
-      current.high - previous.high;
+      current.high -
+      previous.high;
 
     const downMove =
-      previous.low - current.low;
+      previous.low -
+      current.low;
 
-    const trueRange = Math.max(
-      current.high - current.low,
-      Math.abs(current.high - previous.close),
-      Math.abs(current.low - previous.close)
-    );
+    const trueRange =
+      Math.max(
+        current.high -
+          current.low,
+
+        Math.abs(
+          current.high -
+          previous.close
+        ),
+
+        Math.abs(
+          current.low -
+          previous.close
+        )
+      );
 
     trs.push(trueRange);
 
     plusDM.push(
-      upMove > downMove && upMove > 0
+      upMove > downMove &&
+      upMove > 0
         ? upMove
         : 0
     );
 
     minusDM.push(
-      downMove > upMove && downMove > 0
+      downMove > upMove &&
+      downMove > 0
         ? downMove
         : 0
     );
   }
 
-  const tr = sma(trs, period);
-  const plus = sma(plusDM, period);
-  const minus = sma(minusDM, period);
+  const tr =
+    sma(trs, period);
+
+  const plus =
+    sma(plusDM, period);
+
+  const minus =
+    sma(minusDM, period);
 
   if (
     tr === null ||
@@ -621,28 +905,30 @@ function adx(candles, period = 14) {
   }
 
   const plusDI =
-    100 * (plus / tr);
+    100 * plus / tr;
 
   const minusDI =
-    100 * (minus / tr);
+    100 * minus / tr;
 
-  const denominator =
+  const total =
     plusDI + minusDI;
 
-  if (denominator === 0) {
+  if (total === 0) {
     return 0;
   }
 
   return (
     100 *
-    Math.abs(plusDI - minusDI) /
-    denominator
+    Math.abs(
+      plusDI - minusDI
+    ) /
+    total
   );
 }
 
 
 // ============================================================
-// CANDLE ANALYSIS
+// MOMENTUM
 // ============================================================
 
 function candleMomentum(candles) {
@@ -651,20 +937,31 @@ function candleMomentum(candles) {
     return 0;
   }
 
-  const a = candles[candles.length - 1];
-  const b = candles[candles.length - 2];
+  const last =
+    candles[candles.length - 1];
 
-  const bodyA =
-    a.close - a.open;
+  const previous =
+    candles[candles.length - 2];
 
-  const bodyB =
-    b.close - b.open;
+  const bodyLast =
+    last.close -
+    last.open;
 
-  if (bodyA > 0 && bodyB > 0) {
+  const bodyPrevious =
+    previous.close -
+    previous.open;
+
+  if (
+    bodyLast > 0 &&
+    bodyPrevious > 0
+  ) {
     return 1;
   }
 
-  if (bodyA < 0 && bodyB < 0) {
+  if (
+    bodyLast < 0 &&
+    bodyPrevious < 0
+  ) {
     return -1;
   }
 
@@ -676,9 +973,15 @@ function candleMomentum(candles) {
 // BREAKOUT
 // ============================================================
 
-function breakoutDirection(candles, lookback = 20) {
+function breakoutDirection(
+  candles,
+  lookback = 20
+) {
 
-  if (candles.length < lookback + 2) {
+  if (
+    candles.length <
+    lookback + 2
+  ) {
     return 0;
   }
 
@@ -686,25 +989,46 @@ function breakoutDirection(candles, lookback = 20) {
     candles[candles.length - 1];
 
   const start =
-    candles.length - 1 - lookback;
+    candles.length -
+    1 -
+    lookback;
 
-  let highest = -Infinity;
-  let lowest = Infinity;
+  let highest =
+    -Infinity;
 
-  for (let i = start; i < candles.length - 1; i++) {
+  let lowest =
+    Infinity;
+
+  for (
+    let i = start;
+    i < candles.length - 1;
+    i++
+  ) {
 
     highest =
-      Math.max(highest, candles[i].high);
+      Math.max(
+        highest,
+        candles[i].high
+      );
 
     lowest =
-      Math.min(lowest, candles[i].low);
+      Math.min(
+        lowest,
+        candles[i].low
+      );
   }
 
-  if (last.close > highest) {
+  if (
+    last.close >
+    highest
+  ) {
     return 1;
   }
 
-  if (last.close < lowest) {
+  if (
+    last.close <
+    lowest
+  ) {
     return -1;
   }
 
@@ -713,13 +1037,17 @@ function breakoutDirection(candles, lookback = 20) {
 
 
 // ============================================================
-// ANALYZE ONE TIMEFRAME
+// TIMEFRAME ANALYSIS
 // ============================================================
 
-function analyzeTimeframe(candles) {
+function analyzeTimeframe(
+  candles
+) {
 
   const closes =
-    candles.map(c => c.close);
+    candles.map(
+      c => c.close
+    );
 
   const last =
     candles[candles.length - 1];
@@ -749,12 +1077,16 @@ function analyzeTimeframe(candles) {
     candleMomentum(candles);
 
   const breakout =
-    breakoutDirection(candles, 20);
+    breakoutDirection(
+      candles,
+      20
+    );
 
   let buyScore = 0;
   let sellScore = 0;
 
-  // EMA trend
+
+  // EMA
   if (
     ema20 !== null &&
     ema50 !== null &&
@@ -778,6 +1110,7 @@ function analyzeTimeframe(candles) {
     }
   }
 
+
   // RSI
   if (rsiValue !== null) {
 
@@ -796,36 +1129,43 @@ function analyzeTimeframe(candles) {
     }
   }
 
+
   // MACD
   if (macdValue) {
 
     if (
-      macdValue.macd > macdValue.signal &&
+      macdValue.macd >
+        macdValue.signal &&
       macdValue.histogram > 0
     ) {
       buyScore += 15;
     }
 
     if (
-      macdValue.macd < macdValue.signal &&
+      macdValue.macd <
+        macdValue.signal &&
       macdValue.histogram < 0
     ) {
       sellScore += 15;
     }
   }
 
+
   // ADX
-  if (adxValue !== null) {
+  if (
+    adxValue !== null &&
+    adxValue >= 20
+  ) {
 
-    if (adxValue >= 20) {
-
-      if (buyScore >= sellScore) {
-        buyScore += 10;
-      } else {
-        sellScore += 10;
-      }
+    if (
+      buyScore >= sellScore
+    ) {
+      buyScore += 10;
+    } else {
+      sellScore += 10;
     }
   }
+
 
   // Momentum
   if (momentum === 1) {
@@ -836,6 +1176,7 @@ function analyzeTimeframe(candles) {
     sellScore += 10;
   }
 
+
   // Breakout
   if (breakout === 1) {
     buyScore += 10;
@@ -844,6 +1185,7 @@ function analyzeTimeframe(candles) {
   if (breakout === -1) {
     sellScore += 10;
   }
+
 
   return {
     price: last.close,
@@ -863,7 +1205,7 @@ function analyzeTimeframe(candles) {
 
 
 // ============================================================
-// FINAL SIGNAL
+// BUILD SIGNAL
 // ============================================================
 
 function buildSignal(
@@ -879,7 +1221,8 @@ function buildSignal(
     return null;
   }
 
-  // Last CLOSED candle.
+
+  // Ignore currently forming candles.
   const closed15 =
     candles15.slice(
       0,
@@ -892,32 +1235,41 @@ function buildSignal(
       candles1h.length - 1
     );
 
-  const a15 =
-    analyzeTimeframe(closed15);
 
-  const a1h =
-    analyzeTimeframe(closed1h);
+  const analysis15 =
+    analyzeTimeframe(
+      closed15
+    );
+
+  const analysis1h =
+    analyzeTimeframe(
+      closed1h
+    );
+
+
+  const buyScore =
+    analysis15.buyScore +
+    analysis1h.buyScore;
+
+  const sellScore =
+    analysis15.sellScore +
+    analysis1h.sellScore;
+
 
   let direction = null;
 
-  const buyScore =
-    a15.buyScore +
-    a1h.buyScore;
-
-  const sellScore =
-    a15.sellScore +
-    a1h.sellScore;
-
   if (
     buyScore >= CONFIG.minScore &&
-    buyScore - sellScore >= CONFIG.minScoreGap
+    buyScore - sellScore >=
+      CONFIG.minScoreGap
   ) {
     direction = "BUY";
   }
 
   if (
     sellScore >= CONFIG.minScore &&
-    sellScore - buyScore >= CONFIG.minScoreGap
+    sellScore - buyScore >=
+      CONFIG.minScoreGap
   ) {
     direction = "SELL";
   }
@@ -926,26 +1278,35 @@ function buildSignal(
     return null;
   }
 
+
   const score =
     Math.max(
       buyScore,
       sellScore
     );
 
-  const entry = a15.price;
+  const entry =
+    analysis15.price;
 
-  const atrValue = a15.atr;
+  const atrValue =
+    analysis15.atr;
+
 
   if (
+    !Number.isFinite(entry) ||
     !Number.isFinite(atrValue) ||
-    atrValue <= 0 ||
-    entry <= 0
+    entry <= 0 ||
+    atrValue <= 0
   ) {
     return null;
   }
 
+
   const atrPercent =
-    (atrValue / entry) * 100;
+    atrValue /
+    entry *
+    100;
+
 
   if (
     atrPercent <
@@ -954,12 +1315,16 @@ function buildSignal(
     return null;
   }
 
+
   const risk =
-    atrValue * CONFIG.atrMultiplier;
+    atrValue *
+    CONFIG.atrMultiplier;
+
 
   let stopLoss;
   let tp1;
   let tp2;
+
 
   if (direction === "BUY") {
 
@@ -988,6 +1353,7 @@ function buildSignal(
       risk * CONFIG.tp2R;
   }
 
+
   return {
     symbol,
     direction,
@@ -998,12 +1364,13 @@ function buildSignal(
     tp1,
     tp2,
     atr: atrValue,
-    timeframe: CONFIG.signalInterval,
+    timeframe:
+      CONFIG.signalInterval,
     confirmationTimeframe:
       CONFIG.confirmInterval,
     reason: {
-      signal15m: a15,
-      confirmation1h: a1h
+      signal15m: analysis15,
+      confirmation1h: analysis1h
     }
   };
 }
@@ -1015,17 +1382,15 @@ function buildSignal(
 
 async function getOpenSignalCount(env) {
 
-  const result =
-    await env.DB
-      .prepare(
-        `SELECT COUNT(*) AS count
-         FROM signals
-         WHERE status = 'OPEN'`
-      )
-      .first();
+  const row =
+    await env.DB.prepare(
+`SELECT COUNT(*) AS count
+FROM signals
+WHERE status = 'OPEN'`
+    ).first();
 
   return Number(
-    result?.count || 0
+    row?.count || 0
   );
 }
 
@@ -1042,23 +1407,26 @@ async function recentlySignaled(
   const cutoff =
     new Date(
       Date.now() -
-      CONFIG.cooldownMinutes * 60000
+      CONFIG.cooldownMinutes *
+      60000
     ).toISOString();
 
-  const result =
-    await env.DB
-      .prepare(
-        `SELECT id
-         FROM signals
-         WHERE symbol = ?
-           AND created_at >= ?
-         ORDER BY id DESC
-         LIMIT 1`
-      )
-      .bind(symbol, cutoff)
-      .first();
+  const row =
+    await env.DB.prepare(
+`SELECT id
+FROM signals
+WHERE symbol = ?
+AND created_at >= ?
+ORDER BY id DESC
+LIMIT 1`
+    )
+    .bind(
+      symbol,
+      cutoff
+    )
+    .first();
 
-  return Boolean(result);
+  return Boolean(row);
 }
 
 
@@ -1075,64 +1443,87 @@ async function saveSignal(
     new Date().toISOString();
 
   const result =
-    await env.DB
-      .prepare(
-        `INSERT INTO signals
-        (
-          symbol,
-          direction,
-          score,
-          confidence,
-          entry,
-          stop_loss,
-          tp1,
-          tp2,
-          atr,
-          timeframe,
-          confirmation_timeframe,
-          status,
-          reason,
-          created_at
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      )
-      .bind(
-        signal.symbol,
-        signal.direction,
-        signal.score,
-        signal.confidence,
-        signal.entry,
-        signal.stopLoss,
-        signal.tp1,
-        signal.tp2,
-        signal.atr,
-        signal.timeframe,
-        signal.confirmationTimeframe,
-        "OPEN",
-        JSON.stringify(signal.reason),
-        now
-      )
-      .run();
+    await env.DB.prepare(
+`INSERT INTO signals
+(
+  symbol,
+  direction,
+  score,
+  confidence,
+  entry,
+  stop_loss,
+  tp1,
+  tp2,
+  atr,
+  timeframe,
+  confirmation_timeframe,
+  status,
+  reason,
+  created_at
+)
+VALUES
+(
+  ?,
+  ?,
+  ?,
+  ?,
+  ?,
+  ?,
+  ?,
+  ?,
+  ?,
+  ?,
+  ?,
+  ?,
+  ?,
+  ?
+)`
+    )
+    .bind(
+      signal.symbol,
+      signal.direction,
+      signal.score,
+      signal.confidence,
+      signal.entry,
+      signal.stopLoss,
+      signal.tp1,
+      signal.tp2,
+      signal.atr,
+      signal.timeframe,
+      signal.confirmationTimeframe,
+      "OPEN",
+      JSON.stringify(
+        signal.reason
+      ),
+      now
+    )
+    .run();
 
   return result.meta.last_row_id;
 }
 
 
 // ============================================================
-// TELEGRAM
+// PRICE FORMAT
 // ============================================================
 
 function formatPrice(value) {
 
-  if (!Number.isFinite(value)) {
+  if (
+    !Number.isFinite(value)
+  ) {
     return "-";
   }
 
-  if (Math.abs(value) >= 1000) {
+  if (
+    Math.abs(value) >= 1000
+  ) {
     return value.toFixed(2);
   }
 
-  if (Math.abs(value) >= 100) {
+  if (
+    Math.abs(value) >= 100
+  ) {
     return value.toFixed(3);
   }
 
@@ -1140,7 +1531,13 @@ function formatPrice(value) {
 }
 
 
-function formatSignal(signal) {
+// ============================================================
+// TELEGRAM FORMAT
+// ============================================================
+
+function formatSignal(
+  signal
+) {
 
   const emoji =
     signal.direction === "BUY"
@@ -1165,9 +1562,14 @@ Confirmation: ${signal.confirmationTimeframe}
 
 Risk model: ${CONFIG.riskPercent}%
 
-This is an analytical signal, not a guarantee of profit.`;
+Analytical signal only.
+No profit guarantee.`;
 }
 
+
+// ============================================================
+// TELEGRAM BROADCAST
+// ============================================================
 
 async function sendTelegram(
   env,
@@ -1180,30 +1582,23 @@ async function sendTelegram(
   if (!token) {
     return {
       sent: false,
-      reason: "Telegram token missing"
+      reason:
+        "Telegram token missing"
     };
   }
 
-  if (!env.DB) {
-    return {
-      sent: false,
-      reason: "DB missing"
-    };
-  }
-
-  const subscribers =
-    await env.DB
-      .prepare(
-        `SELECT chat_id
-         FROM subscribers
-         WHERE active = 1`
-      )
-      .all();
+  const result =
+    await env.DB.prepare(
+`SELECT chat_id
+FROM subscribers
+WHERE active = 1`
+    ).all();
 
   let sent = 0;
 
   for (
-    const row of subscribers.results || []
+    const subscriber
+    of result.results || []
   ) {
 
     try {
@@ -1217,10 +1612,12 @@ async function sendTelegram(
               "content-type":
                 "application/json"
             },
-            body: JSON.stringify({
-              chat_id: row.chat_id,
-              text
-            })
+            body:
+              JSON.stringify({
+                chat_id:
+                  subscriber.chat_id,
+                text
+              })
           }
         );
 
@@ -1228,8 +1625,13 @@ async function sendTelegram(
         sent++;
       }
 
-    } catch (_) {
-      // Continue with next subscriber.
+    } catch (error) {
+
+      console.error(
+        "Telegram error",
+        error
+      );
+
     }
   }
 
@@ -1241,7 +1643,7 @@ async function sendTelegram(
 
 
 // ============================================================
-// ENGINE
+// MAIN ENGINE
 // ============================================================
 
 async function runEngine(env) {
@@ -1254,24 +1656,35 @@ async function runEngine(env) {
 
   await ensureDatabase(env);
 
-  const openCount =
-    await getOpenSignalCount(env);
+
+  const openSignals =
+    await getOpenSignalCount(
+      env
+    );
+
 
   if (
-    openCount >=
+    openSignals >=
     CONFIG.maxOpenSignals
   ) {
+
     return {
       ok: true,
-      message: "Maximum open signals reached",
-      openSignals: openCount
+      version: "V4",
+      message:
+        "Maximum open signals reached",
+      openSignals
     };
+
   }
+
 
   const generated = [];
 
+
   for (
-    const symbol of CONFIG.symbols
+    const symbol
+    of CONFIG.symbols
   ) {
 
     if (
@@ -1280,6 +1693,7 @@ async function runEngine(env) {
     ) {
       break;
     }
+
 
     try {
 
@@ -1292,6 +1706,7 @@ async function runEngine(env) {
         continue;
       }
 
+
       const candles15 =
         await getCandles(
           env,
@@ -1299,6 +1714,7 @@ async function runEngine(env) {
           CONFIG.signalInterval,
           CONFIG.candles15
         );
+
 
       const candles1h =
         await getCandles(
@@ -1308,6 +1724,7 @@ async function runEngine(env) {
           CONFIG.candles1h
         );
 
+
       const signal =
         buildSignal(
           symbol,
@@ -1315,9 +1732,11 @@ async function runEngine(env) {
           candles1h
         );
 
+
       if (!signal) {
         continue;
       }
+
 
       const signalId =
         await saveSignal(
@@ -1325,26 +1744,34 @@ async function runEngine(env) {
           signal
         );
 
-      await env.DB
-        .prepare(
-          `INSERT INTO signal_events
-          (
-            signal_id,
-            event,
-            price,
-            details,
-            created_at
-          )
-          VALUES (?, ?, ?, ?, ?)`
-        )
-        .bind(
-          signalId,
-          "CREATED",
-          signal.entry,
-          JSON.stringify(signal),
-          new Date().toISOString()
-        )
-        .run();
+
+      await env.DB.prepare(
+`INSERT INTO signal_events
+(
+  signal_id,
+  event,
+  price,
+  details,
+  created_at
+)
+VALUES
+(
+  ?,
+  ?,
+  ?,
+  ?,
+  ?
+)`
+      )
+      .bind(
+        signalId,
+        "CREATED",
+        signal.entry,
+        JSON.stringify(signal),
+        new Date().toISOString()
+      )
+      .run();
+
 
       const telegram =
         await sendTelegram(
@@ -1352,25 +1779,30 @@ async function runEngine(env) {
           formatSignal(signal)
         );
 
+
       generated.push({
         id: signalId,
         ...signal,
         telegram
       });
 
+
     } catch (error) {
 
       console.error(
-        "Symbol error:",
+        "Symbol processing error:",
         symbol,
         error
       );
+
     }
+
   }
+
 
   return {
     ok: true,
-    version: "V3",
+    version: "V4",
     generated,
     generatedCount:
       generated.length,
@@ -1387,38 +1819,41 @@ async function runEngine(env) {
 async function apiSignals(env) {
 
   if (!env.DB) {
+
     return json({
       ok: false,
-      error: "D1 binding DB is missing"
+      error:
+        "D1 binding DB is missing"
     }, 500);
+
   }
 
   await ensureDatabase(env);
 
+
   const result =
-    await env.DB
-      .prepare(
-        `SELECT
-          id,
-          symbol,
-          direction,
-          score,
-          confidence,
-          entry,
-          stop_loss,
-          tp1,
-          tp2,
-          atr,
-          timeframe,
-          confirmation_timeframe,
-          status,
-          created_at,
-          closed_at
-        FROM signals
-        ORDER BY id DESC
-        LIMIT 50`
-      )
-      .all();
+    await env.DB.prepare(
+`SELECT
+  id,
+  symbol,
+  direction,
+  score,
+  confidence,
+  entry,
+  stop_loss,
+  tp1,
+  tp2,
+  atr,
+  timeframe,
+  confirmation_timeframe,
+  status,
+  created_at,
+  closed_at
+FROM signals
+ORDER BY id DESC
+LIMIT 50`
+    ).all();
+
 
   return json({
     ok: true,
@@ -1437,51 +1872,52 @@ async function apiSignals(env) {
 async function apiStats(env) {
 
   if (!env.DB) {
+
     return json({
       ok: false,
-      error: "D1 binding DB is missing"
+      error:
+        "D1 binding DB is missing"
     }, 500);
+
   }
 
   await ensureDatabase(env);
 
+
   const total =
-    await env.DB
-      .prepare(
-        `SELECT COUNT(*) AS count
-         FROM signals`
-      )
-      .first();
+    await env.DB.prepare(
+`SELECT COUNT(*) AS count
+FROM signals`
+    ).first();
+
 
   const open =
-    await env.DB
-      .prepare(
-        `SELECT COUNT(*) AS count
-         FROM signals
-         WHERE status = 'OPEN'`
-      )
-      .first();
+    await env.DB.prepare(
+`SELECT COUNT(*) AS count
+FROM signals
+WHERE status = 'OPEN'`
+    ).first();
+
 
   const buy =
-    await env.DB
-      .prepare(
-        `SELECT COUNT(*) AS count
-         FROM signals
-         WHERE direction = 'BUY'`
-      )
-      .first();
+    await env.DB.prepare(
+`SELECT COUNT(*) AS count
+FROM signals
+WHERE direction = 'BUY'`
+    ).first();
+
 
   const sell =
-    await env.DB
-      .prepare(
-        `SELECT COUNT(*) AS count
-         FROM signals
-         WHERE direction = 'SELL'`
-      )
-      .first();
+    await env.DB.prepare(
+`SELECT COUNT(*) AS count
+FROM signals
+WHERE direction = 'SELL'`
+    ).first();
+
 
   return json({
     ok: true,
+    version: "V4",
     totalSignals:
       Number(total?.count || 0),
     openSignals:
@@ -1505,21 +1941,32 @@ async function telegramWebhook(
   env
 ) {
 
-  if (request.method !== "POST") {
+  if (
+    request.method !== "POST"
+  ) {
+
     return json({
       ok: true,
-      message: "Telegram webhook endpoint"
+      message:
+        "Telegram webhook endpoint"
     });
+
   }
+
 
   if (!env.DB) {
+
     return json({
       ok: false,
-      error: "D1 binding DB is missing"
+      error:
+        "D1 binding DB is missing"
     }, 500);
+
   }
 
+
   await ensureDatabase(env);
+
 
   const update =
     await request.json();
@@ -1527,103 +1974,128 @@ async function telegramWebhook(
   const message =
     update.message;
 
+
   if (!message) {
     return json({
       ok: true
     });
   }
 
+
   const chatId =
-    String(message.chat.id);
+    String(
+      message.chat.id
+    );
 
   const username =
     message.from?.username ||
     "";
 
   const text =
-    String(message.text || "")
-      .trim();
+    String(
+      message.text || ""
+    ).trim();
+
 
   const now =
     new Date().toISOString();
 
-  await env.DB
-    .prepare(
-      `INSERT INTO subscribers
-      (
-        chat_id,
-        username,
-        active,
-        created_at,
-        updated_at
-      )
-      VALUES (?, ?, 1, ?, ?)
-      ON CONFLICT(chat_id)
-      DO UPDATE SET
-        username = excluded.username,
-        active = 1,
-        updated_at = excluded.updated_at`
-    )
-    .bind(
-      chatId,
-      username,
-      now,
-      now
-    )
-    .run();
 
-  if (text === "/start") {
+  await env.DB.prepare(
+`INSERT INTO subscribers
+(
+  chat_id,
+  username,
+  active,
+  created_at,
+  updated_at
+)
+VALUES
+(
+  ?,
+  ?,
+  1,
+  ?,
+  ?
+)
+ON CONFLICT(chat_id)
+DO UPDATE SET
+username = excluded.username,
+active = 1,
+updated_at = excluded.updated_at`
+  )
+  .bind(
+    chatId,
+    username,
+    now,
+    now
+  )
+  .run();
+
+
+  if (
+    text === "/start"
+  ) {
 
     await sendTelegramToChat(
       env,
       chatId,
 `FOREX SIGNAL ENGINE
 
-You are subscribed to the signal engine.
+You are subscribed.
 
 Commands:
+
 /start
 /signals
 /stats`
     );
 
-  } else if (text === "/signals") {
+  }
+
+
+  else if (
+    text === "/signals"
+  ) {
 
     const result =
-      await env.DB
-        .prepare(
-          `SELECT
-            symbol,
-            direction,
-            score,
-            entry,
-            stop_loss,
-            tp1,
-            tp2,
-            created_at
-           FROM signals
-           ORDER BY id DESC
-           LIMIT 5`
-        )
-        .all();
+      await env.DB.prepare(
+`SELECT
+  symbol,
+  direction,
+  score,
+  entry,
+  stop_loss,
+  tp1,
+  tp2,
+  created_at
+FROM signals
+ORDER BY id DESC
+LIMIT 5`
+      ).all();
+
 
     let output =
       "LATEST SIGNALS\n\n";
 
+
     for (
-      const s of result.results || []
+      const signal
+      of result.results || []
     ) {
 
       output +=
-`${s.symbol} ${s.direction}
-Score: ${s.score}
-Entry: ${s.entry}
-SL: ${s.stop_loss}
-TP1: ${s.tp1}
-TP2: ${s.tp2}
+`${signal.symbol} ${signal.direction}
+Score: ${signal.score}
+Entry: ${signal.entry}
+SL: ${signal.stop_loss}
+TP1: ${signal.tp1}
+TP2: ${signal.tp2}
 
 `;
+
     }
+
 
     await sendTelegramToChat(
       env,
@@ -1631,24 +2103,27 @@ TP2: ${s.tp2}
       output
     );
 
-  } else if (text === "/stats") {
+  }
+
+
+  else if (
+    text === "/stats"
+  ) {
 
     const total =
-      await env.DB
-        .prepare(
-          `SELECT COUNT(*) AS count
-           FROM signals`
-        )
-        .first();
+      await env.DB.prepare(
+`SELECT COUNT(*) AS count
+FROM signals`
+      ).first();
+
 
     const open =
-      await env.DB
-        .prepare(
-          `SELECT COUNT(*) AS count
-           FROM signals
-           WHERE status = 'OPEN'`
-        )
-        .first();
+      await env.DB.prepare(
+`SELECT COUNT(*) AS count
+FROM signals
+WHERE status = 'OPEN'`
+      ).first();
+
 
     await sendTelegramToChat(
       env,
@@ -1658,7 +2133,9 @@ TP2: ${s.tp2}
 Total signals: ${total?.count || 0}
 Open signals: ${open?.count || 0}`
     );
+
   }
+
 
   return json({
     ok: true
@@ -1667,7 +2144,7 @@ Open signals: ${open?.count || 0}`
 
 
 // ============================================================
-// TELEGRAM SINGLE CHAT
+// TELEGRAM CHAT
 // ============================================================
 
 async function sendTelegramToChat(
@@ -1683,6 +2160,7 @@ async function sendTelegramToChat(
     return false;
   }
 
+
   const response =
     await fetch(
       `https://api.telegram.org/bot${token}/sendMessage`,
@@ -1692,19 +2170,21 @@ async function sendTelegramToChat(
           "content-type":
             "application/json"
         },
-        body: JSON.stringify({
-          chat_id: chatId,
-          text
-        })
+        body:
+          JSON.stringify({
+            chat_id: chatId,
+            text
+          })
       }
     );
+
 
   return response.ok;
 }
 
 
 // ============================================================
-// SETUP TELEGRAM WEBHOOK
+// TELEGRAM SETUP
 // ============================================================
 
 async function setupTelegramWebhook(
@@ -1715,25 +2195,29 @@ async function setupTelegramWebhook(
     getTelegramToken(env);
 
   if (!token) {
+
     return json({
       ok: false,
-      error: "Telegram token missing"
+      error:
+        "Telegram token missing"
     }, 500);
+
   }
 
-  const base =
-    "https://forex-signal-engine.hakima09360.workers.dev";
 
   const webhook =
-    `${base}/telegram/webhook`;
+    "https://forex-signal-engine.hakima09360.workers.dev/telegram/webhook";
+
 
   const response =
     await fetch(
       `https://api.telegram.org/bot${token}/setWebhook?url=${encodeURIComponent(webhook)}`
     );
 
+
   const data =
     await response.json();
+
 
   return json({
     ok: Boolean(data.ok),
@@ -1748,40 +2232,61 @@ async function setupTelegramWebhook(
 
 export default {
 
-  async fetch(request, env) {
+  async fetch(
+    request,
+    env
+  ) {
 
     const url =
       new URL(request.url);
 
+
     try {
 
+      // HOME
       if (
         url.pathname === "/" ||
         url.pathname === ""
       ) {
+
         return html(
           homePage()
         );
+
       }
 
+
+      // HEALTH
       if (
         url.pathname === "/health"
       ) {
+
         return health(env);
+
       }
 
+
+      // ROBOTS
       if (
         url.pathname === "/robots.txt"
       ) {
+
         return robotsTxt();
+
       }
 
+
+      // SITEMAP
       if (
         url.pathname === "/sitemap.xml"
       ) {
+
         return sitemapXml();
+
       }
 
+
+      // MANUAL RUN
       if (
         url.pathname === "/run"
       ) {
@@ -1790,41 +2295,64 @@ export default {
           await runEngine(env);
 
         return json(result);
+
       }
 
+
+      // SIGNALS
       if (
-        url.pathname === "/api/signals"
+        url.pathname ===
+        "/api/signals"
       ) {
+
         return apiSignals(env);
+
       }
 
+
+      // STATS
       if (
-        url.pathname === "/api/stats"
+        url.pathname ===
+        "/api/stats"
       ) {
+
         return apiStats(env);
+
       }
 
+
+      // TELEGRAM
       if (
-        url.pathname === "/telegram/webhook"
+        url.pathname ===
+        "/telegram/webhook"
       ) {
+
         return telegramWebhook(
           request,
           env
         );
+
       }
 
+
+      // TELEGRAM SETUP
       if (
-        url.pathname === "/setup-chat"
+        url.pathname ===
+        "/setup-chat"
       ) {
+
         return setupTelegramWebhook(
           env
         );
+
       }
+
 
       return json({
         ok: false,
         error: "Not found"
       }, 404);
+
 
     } catch (error) {
 
@@ -1833,13 +2361,16 @@ export default {
         error
       );
 
+
       return json({
         ok: false,
         error:
           error?.message ||
           String(error)
       }, 500);
+
     }
+
   },
 
 
@@ -1852,11 +2383,15 @@ export default {
     ctx.waitUntil(
       runEngine(env)
         .catch(error => {
+
           console.error(
             "Scheduled engine error:",
             error
           );
+
         })
     );
+
   }
+
 };
