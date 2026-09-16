@@ -1,5 +1,5 @@
 // ============================================================
-// FOREX SIGNAL ENGINE V5
+// FOREX SIGNAL ENGINE V5.1 DIAGNOSTIC
 // Cloudflare Worker + D1 + Twelve Data + Telegram
 // Focus: XAU/USD + Multi-Timeframe Confirmation
 // ============================================================
@@ -19,7 +19,7 @@ const CONFIG = {
   candles15: 250,
   candles1h: 250,
 
-  // 0-100 score
+  // Signal thresholds
   minScore: 72,
   strongScore: 85,
 
@@ -37,11 +37,9 @@ const CONFIG = {
   maxNewSignalsPerRun: 1,
   maxOpenSignals: 2,
 
-  // Lowered from previous version so normal Gold volatility
-  // is not rejected too aggressively.
   minAtrPercent: 0.01,
 
-  // Gold gets priority
+  // Gold priority
   goldPriorityBonus: 3
 };
 
@@ -138,6 +136,7 @@ h2{
   padding:7px 12px;
   border-radius:20px;
   background:#1d3557;
+  margin:3px;
 }
 
 .gold{
@@ -171,6 +170,10 @@ XAU/USD Priority
 
 <p class="badge">
 Multi-Timeframe Analysis
+</p>
+
+<p class="badge">
+V5.1 Diagnostic
 </p>
 
 <p>
@@ -217,13 +220,14 @@ Multi-Timeframe Analysis
 <div class="card">
 
 <p>
-The engine identifies high-confirmation analytical trading
-opportunities using multiple technical indicators and timeframes.
+The engine identifies multi-confirmation analytical
+trading opportunities using multiple technical indicators
+and timeframes.
 </p>
 
 <p>
-Trading decisions and risk management remain the responsibility
-of the user.
+XAU/USD is processed first and diagnostic information is
+returned when a signal is rejected.
 </p>
 
 </div>
@@ -240,7 +244,6 @@ of the user.
 // ============================================================
 
 function robotsTxt() {
-
   return new Response(
 `User-agent: *
 Allow: /
@@ -261,7 +264,6 @@ Sitemap: https://forex-signal-engine.hakima09360.workers.dev/sitemap.xml`,
 // ============================================================
 
 function sitemapXml() {
-
   return new Response(
 `<?xml version="1.0" encoding="UTF-8"?>
 
@@ -292,7 +294,7 @@ xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
 
 
 // ============================================================
-// D1 DATABASE INITIALIZATION
+// D1 DATABASE
 // ============================================================
 
 async function ensureDatabase(env) {
@@ -365,12 +367,10 @@ async function ensureDatabase(env) {
 async function health(env) {
 
   if (!env.DB) {
-
     return json({
       ok: false,
       error: "D1 binding DB is missing"
     }, 500);
-
   }
 
   try {
@@ -385,7 +385,7 @@ async function health(env) {
     return json({
       ok: true,
       service: "forex-signal-engine",
-      version: "V5",
+      version: "V5.1",
       database:
         result?.database_ok === 1
           ? "connected"
@@ -398,12 +398,11 @@ async function health(env) {
     return json({
       ok: false,
       service: "forex-signal-engine",
-      version: "V5",
+      version: "V5.1",
       error:
         error?.message ||
         String(error)
     }, 500);
-
   }
 }
 
@@ -444,35 +443,29 @@ async function getCandles(
     await fetch(url);
 
   if (!response.ok) {
-
     throw new Error(
       "Twelve Data HTTP " +
       response.status
     );
-
   }
 
   const data =
     await response.json();
 
   if (data.status === "error") {
-
     throw new Error(
       data.message ||
       "Twelve Data API error"
     );
-
   }
 
   if (!Array.isArray(data.values)) {
-
     throw new Error(
       "No candle data returned for " +
       symbol +
       " " +
       interval
     );
-
   }
 
   return data.values
@@ -723,7 +716,6 @@ function macd(values) {
         ema12[i] -
         ema26[i]
       );
-
     }
   }
 
@@ -1098,13 +1090,9 @@ function analyzeTimeframe(
   const sellReasons = [];
 
 
-  // ----------------------------------------------------------
-  // EMA TREND
-  // ----------------------------------------------------------
-
+  // EMA20
   if (
-    ema20 !== null &&
-    ema50 !== null
+    ema20 !== null
   ) {
 
     if (
@@ -1124,6 +1112,14 @@ function analyzeTimeframe(
         "Price below EMA20"
       );
     }
+  }
+
+
+  // EMA20 / EMA50
+  if (
+    ema20 !== null &&
+    ema50 !== null
+  ) {
 
     if (
       ema20 > ema50
@@ -1145,10 +1141,7 @@ function analyzeTimeframe(
   }
 
 
-  // ----------------------------------------------------------
   // EMA200
-  // ----------------------------------------------------------
-
   if (
     ema200 !== null
   ) {
@@ -1173,10 +1166,7 @@ function analyzeTimeframe(
   }
 
 
-  // ----------------------------------------------------------
   // RSI
-  // ----------------------------------------------------------
-
   if (
     rsiValue !== null
   ) {
@@ -1203,10 +1193,7 @@ function analyzeTimeframe(
   }
 
 
-  // ----------------------------------------------------------
   // MACD
-  // ----------------------------------------------------------
-
   if (
     macdValue
   ) {
@@ -1239,49 +1226,38 @@ function analyzeTimeframe(
   }
 
 
-  // ----------------------------------------------------------
   // ADX
-  // ----------------------------------------------------------
-
   if (
-    adxValue !== null
+    adxValue !== null &&
+    adxValue >= 20
   ) {
 
     if (
-      adxValue >= 20
+      buyScore >
+      sellScore
     ) {
 
-      // ADX confirms trend strength.
-      if (
-        buyScore >
-        sellScore
-      ) {
+      buyScore += 10;
 
-        buyScore += 10;
+      buyReasons.push(
+        "ADX trend strength confirmed"
+      );
 
-        buyReasons.push(
-          "ADX trend strength confirmed"
-        );
+    } else if (
+      sellScore >
+      buyScore
+    ) {
 
-      } else if (
-        sellScore >
-        buyScore
-      ) {
+      sellScore += 10;
 
-        sellScore += 10;
-
-        sellReasons.push(
-          "ADX trend strength confirmed"
-        );
-      }
+      sellReasons.push(
+        "ADX trend strength confirmed"
+      );
     }
   }
 
 
-  // ----------------------------------------------------------
-  // MOMENTUM
-  // ----------------------------------------------------------
-
+  // Momentum
   if (
     momentum === 1
   ) {
@@ -1305,10 +1281,7 @@ function analyzeTimeframe(
   }
 
 
-  // ----------------------------------------------------------
-  // BREAKOUT
-  // ----------------------------------------------------------
-
+  // Breakout
   if (
     breakout === 1
   ) {
@@ -1365,8 +1338,6 @@ function convertTo100(
   score1h
 ) {
 
-  // Each timeframe maximum = 80
-  // Combined maximum = 160
   const combined =
     score15 + score1h;
 
@@ -1380,7 +1351,7 @@ function convertTo100(
 
 
 // ============================================================
-// BUILD SIGNAL
+// BUILD SIGNAL + DIAGNOSTICS
 // ============================================================
 
 function buildSignal(
@@ -1393,11 +1364,22 @@ function buildSignal(
     candles15.length < 210 ||
     candles1h.length < 210
   ) {
-    return null;
+
+    return {
+      signal: null,
+
+      diagnostics: {
+        symbol,
+        status: "REJECTED",
+        reason: "INSUFFICIENT_CANDLES",
+        candles15: candles15.length,
+        candles1h: candles1h.length
+      }
+    };
   }
 
 
-  // Use closed candles only.
+  // Closed candles only
   const closed15 =
     candles15.slice(
       0,
@@ -1422,6 +1404,7 @@ function buildSignal(
     );
 
 
+  // Raw scores
   let buyRaw =
     analysis15.buyScore +
     analysis1h.buyScore;
@@ -1431,73 +1414,74 @@ function buildSignal(
     analysis1h.sellScore;
 
 
-  // Gold receives a small priority bonus.
-  if (
-    symbol === "XAU/USD"
-  ) {
-
-    if (
-      buyRaw >
-      sellRaw
-    ) {
-      buyRaw +=
-        CONFIG.goldPriorityBonus;
-    }
-
-    if (
-      sellRaw >
-      buyRaw
-    ) {
-      sellRaw +=
-        CONFIG.goldPriorityBonus;
-    }
-  }
-
-
-  const buyScore =
+  // Base scores before Gold priority
+  const baseBuyScore =
     convertTo100(
       analysis15.buyScore,
       analysis1h.buyScore
     );
 
-  const sellScore =
+  const baseSellScore =
     convertTo100(
       analysis15.sellScore,
       analysis1h.sellScore
     );
 
 
-  // Priority bonus is applied after conversion.
-  const finalBuyScore =
-    symbol === "XAU/USD" &&
-    buyRaw > sellRaw
-      ? Math.min(
-          100,
-          buyScore +
-          CONFIG.goldPriorityBonus
-        )
-      : buyScore;
+  // Gold priority is applied ONCE
+  let finalBuyScore =
+    baseBuyScore;
 
-  const finalSellScore =
-    symbol === "XAU/USD" &&
-    sellRaw > buyRaw
-      ? Math.min(
+  let finalSellScore =
+    baseSellScore;
+
+
+  if (
+    symbol === "XAU/USD"
+  ) {
+
+    if (
+      baseBuyScore >
+      baseSellScore
+    ) {
+
+      finalBuyScore =
+        Math.min(
           100,
-          sellScore +
+          baseBuyScore +
           CONFIG.goldPriorityBonus
-        )
-      : sellScore;
+        );
+
+    } else if (
+      baseSellScore >
+      baseBuyScore
+    ) {
+
+      finalSellScore =
+        Math.min(
+          100,
+          baseSellScore +
+          CONFIG.goldPriorityBonus
+        );
+    }
+  }
+
+
+  const gap =
+    Math.abs(
+      finalBuyScore -
+      finalSellScore
+    );
 
 
   let direction = null;
   let score = 0;
   let reasons = [];
+  let rejectionReason =
+    null;
 
 
-  // ----------------------------------------------------------
   // BUY
-  // ----------------------------------------------------------
-
   if (
     finalBuyScore >=
       CONFIG.minScore &&
@@ -1513,15 +1497,11 @@ function buildSignal(
       ...analysis15.buyReasons,
       ...analysis1h.buyReasons
     ];
-
   }
 
 
-  // ----------------------------------------------------------
   // SELL
-  // ----------------------------------------------------------
-
-  if (
+  else if (
     finalSellScore >=
       CONFIG.minScore &&
     finalSellScore -
@@ -1536,12 +1516,99 @@ function buildSignal(
       ...analysis15.sellReasons,
       ...analysis1h.sellReasons
     ];
-
   }
 
 
+  // Diagnostics
   if (!direction) {
-    return null;
+
+    if (
+      finalBuyScore <
+      CONFIG.minScore &&
+      finalSellScore <
+      CONFIG.minScore
+    ) {
+
+      rejectionReason =
+        "SCORE_BELOW_MINIMUM";
+
+    } else if (
+      gap <
+      CONFIG.minScoreGap
+    ) {
+
+      rejectionReason =
+        "BUY_SELL_GAP_TOO_SMALL";
+
+    } else {
+
+      rejectionReason =
+        "NO_DIRECTION_CONFIRMED";
+    }
+
+
+    return {
+      signal: null,
+
+      diagnostics: {
+        symbol,
+        status: "REJECTED",
+
+        reason:
+          rejectionReason,
+
+        buyScore:
+          finalBuyScore,
+
+        sellScore:
+          finalSellScore,
+
+        scoreGap:
+          gap,
+
+        requiredScore:
+          CONFIG.minScore,
+
+        requiredGap:
+          CONFIG.minScoreGap,
+
+        rawBuyScore:
+          buyRaw,
+
+        rawSellScore:
+          sellRaw,
+
+        price15m:
+          analysis15.price,
+
+        rsi15m:
+          analysis15.rsi,
+
+        rsi1h:
+          analysis1h.rsi,
+
+        adx15m:
+          analysis15.adx,
+
+        adx1h:
+          analysis1h.adx,
+
+        atr15m:
+          analysis15.atr,
+
+        buyReasons15m:
+          analysis15.buyReasons,
+
+        sellReasons15m:
+          analysis15.sellReasons,
+
+        buyReasons1h:
+          analysis1h.buyReasons,
+
+        sellReasons1h:
+          analysis1h.sellReasons
+      }
+    };
   }
 
 
@@ -1558,7 +1625,19 @@ function buildSignal(
     entry <= 0 ||
     atrValue <= 0
   ) {
-    return null;
+
+    return {
+      signal: null,
+
+      diagnostics: {
+        symbol,
+        status: "REJECTED",
+        reason: "INVALID_PRICE_OR_ATR",
+        entry,
+        atr: atrValue,
+        score
+      }
+    };
   }
 
 
@@ -1572,14 +1651,25 @@ function buildSignal(
     atrPercent <
     CONFIG.minAtrPercent
   ) {
-    return null;
+
+    return {
+      signal: null,
+
+      diagnostics: {
+        symbol,
+        status: "REJECTED",
+        reason: "ATR_TOO_LOW",
+        atr: atrValue,
+        atrPercent,
+        requiredAtrPercent:
+          CONFIG.minAtrPercent,
+        score
+      }
+    };
   }
 
 
-  // ----------------------------------------------------------
-  // RISK / REWARD
-  // ----------------------------------------------------------
-
+  // Risk / Reward
   const risk =
     atrValue *
     CONFIG.atrMultiplier;
@@ -1626,7 +1716,7 @@ function buildSignal(
       : "GOOD";
 
 
-  return {
+  const signal = {
     symbol,
 
     direction,
@@ -1635,7 +1725,8 @@ function buildSignal(
 
     score,
 
-    confidence: score,
+    confidence:
+      score,
 
     entry,
 
@@ -1645,7 +1736,8 @@ function buildSignal(
 
     tp2,
 
-    atr: atrValue,
+    atr:
+      atrValue,
 
     atrPercent,
 
@@ -1658,8 +1750,27 @@ function buildSignal(
     reasons,
 
     analysis: {
-      signal15m: analysis15,
-      confirmation1h: analysis1h
+      signal15m:
+        analysis15,
+
+      confirmation1h:
+        analysis1h
+    }
+  };
+
+
+  return {
+    signal,
+
+    diagnostics: {
+      symbol,
+      status: "APPROVED",
+      direction,
+      score,
+      buyScore: finalBuyScore,
+      sellScore: finalSellScore,
+      scoreGap: gap,
+      atrPercent
     }
   };
 }
@@ -1784,8 +1895,10 @@ VALUES
       JSON.stringify({
         strength:
           signal.strength,
+
         reasons:
           signal.reasons,
+
         analysis:
           signal.analysis
       }),
@@ -1888,6 +2001,7 @@ async function sendTelegram(
     getTelegramToken(env);
 
   if (!token) {
+
     return {
       sent: false,
       reason:
@@ -1941,7 +2055,6 @@ WHERE active = 1`
         "Telegram error",
         error
       );
-
     }
   }
 
@@ -1973,6 +2086,16 @@ async function runEngine(env) {
     );
 
 
+  const diagnostics = [];
+  const errors = [];
+  const generated = [];
+
+
+  // Important:
+  // Even when max open signals is reached,
+  // we return diagnostics so the engine
+  // does not look like it is simply broken.
+
   if (
     openSignals >=
     CONFIG.maxOpenSignals
@@ -1980,16 +2103,17 @@ async function runEngine(env) {
 
     return {
       ok: true,
-      version: "V5",
+      version: "V5.1",
+      generated: [],
+      generatedCount: 0,
+      openSignals,
       message:
         "Maximum open signals reached",
-      openSignals
+      diagnostics: [],
+      time:
+        new Date().toISOString()
     };
-
   }
-
-
-  const generated = [];
 
 
   // Gold is intentionally first.
@@ -2014,6 +2138,13 @@ async function runEngine(env) {
           symbol
         )
       ) {
+
+        diagnostics.push({
+          symbol,
+          status: "SKIPPED",
+          reason: "COOLDOWN"
+        });
+
         continue;
       }
 
@@ -2036,7 +2167,7 @@ async function runEngine(env) {
         );
 
 
-      const signal =
+      const result =
         buildSignal(
           symbol,
           candles15,
@@ -2044,9 +2175,18 @@ async function runEngine(env) {
         );
 
 
-      if (!signal) {
+      diagnostics.push(
+        result.diagnostics
+      );
+
+
+      if (!result.signal) {
         continue;
       }
+
+
+      const signal =
+        result.signal;
 
 
       const signalId =
@@ -2100,23 +2240,59 @@ VALUES
 
     } catch (error) {
 
+      const message =
+        error?.message ||
+        String(error);
+
       console.error(
         "Symbol processing error:",
         symbol,
-        error
+        message
       );
 
-    }
 
+      errors.push({
+        symbol,
+        error: message
+      });
+    }
   }
 
 
   return {
     ok: true,
-    version: "V5",
+
+    version: "V5.1",
+
     generated,
+
     generatedCount:
       generated.length,
+
+    diagnostics,
+
+    errors,
+
+    prioritySymbol:
+      "XAU/USD",
+
+    config: {
+      minScore:
+        CONFIG.minScore,
+
+      strongScore:
+        CONFIG.strongScore,
+
+      minScoreGap:
+        CONFIG.minScoreGap,
+
+      minAtrPercent:
+        CONFIG.minAtrPercent,
+
+      goldPriorityBonus:
+        CONFIG.goldPriorityBonus
+    },
+
     time:
       new Date().toISOString()
   };
@@ -2136,7 +2312,6 @@ async function apiSignals(env) {
       error:
         "D1 binding DB is missing"
     }, 500);
-
   }
 
   await ensureDatabase(env);
@@ -2169,8 +2344,10 @@ LIMIT 50`
 
   return json({
     ok: true,
+
     count:
       result.results?.length || 0,
+
     signals:
       result.results || []
   });
@@ -2190,7 +2367,6 @@ async function apiStats(env) {
       error:
         "D1 binding DB is missing"
     }, 500);
-
   }
 
   await ensureDatabase(env);
@@ -2238,7 +2414,7 @@ WHERE symbol = 'XAU/USD'`
   return json({
     ok: true,
 
-    version: "V5",
+    version: "V5.1",
 
     totalSignals:
       Number(total?.count || 0),
@@ -2279,7 +2455,6 @@ async function telegramWebhook(
       message:
         "Telegram webhook endpoint"
     });
-
   }
 
 
@@ -2290,7 +2465,6 @@ async function telegramWebhook(
       error:
         "D1 binding DB is missing"
     }, 500);
-
   }
 
 
@@ -2423,7 +2597,6 @@ TP1: ${signal.tp1}
 TP2: ${signal.tp2}
 
 `;
-
     }
 
 
@@ -2474,7 +2647,6 @@ Open signals: ${open?.count || 0}
 
 XAU/USD signals: ${gold?.count || 0}`
     );
-
   }
 
 
@@ -2544,7 +2716,6 @@ async function setupTelegramWebhook(
       error:
         "Telegram token missing"
     }, 500);
-
   }
 
 
@@ -2595,7 +2766,6 @@ export default {
         return html(
           homePage()
         );
-
       }
 
 
@@ -2605,7 +2775,6 @@ export default {
       ) {
 
         return health(env);
-
       }
 
 
@@ -2615,7 +2784,6 @@ export default {
       ) {
 
         return robotsTxt();
-
       }
 
 
@@ -2625,7 +2793,6 @@ export default {
       ) {
 
         return sitemapXml();
-
       }
 
 
@@ -2638,7 +2805,6 @@ export default {
           await runEngine(env);
 
         return json(result);
-
       }
 
 
@@ -2649,7 +2815,6 @@ export default {
       ) {
 
         return apiSignals(env);
-
       }
 
 
@@ -2660,7 +2825,6 @@ export default {
       ) {
 
         return apiStats(env);
-
       }
 
 
@@ -2674,7 +2838,6 @@ export default {
           request,
           env
         );
-
       }
 
 
@@ -2687,7 +2850,6 @@ export default {
         return setupTelegramWebhook(
           env
         );
-
       }
 
 
@@ -2711,9 +2873,7 @@ export default {
           error?.message ||
           String(error)
       }, 500);
-
     }
-
   },
 
 
@@ -2734,7 +2894,6 @@ export default {
 
         })
     );
-
   }
 
 };
