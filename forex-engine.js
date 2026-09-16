@@ -1,11 +1,10 @@
 // ============================================================
-// FOREX SIGNAL ENGINE V5.1 DIAGNOSTIC
+// FOREX SIGNAL ENGINE V5.2 GOLD FOCUS
 // Cloudflare Worker + D1 + Twelve Data + Telegram
 // Focus: XAU/USD + Multi-Timeframe Confirmation
 // ============================================================
 
 const CONFIG = {
-  // Gold first
   symbols: [
     "XAU/USD",
     "EUR/USD",
@@ -19,11 +18,8 @@ const CONFIG = {
   candles15: 250,
   candles1h: 250,
 
-  // Signal thresholds
   minScore: 72,
   strongScore: 85,
-
-  // Difference between BUY and SELL
   minScoreGap: 10,
 
   atrMultiplier: 1.5,
@@ -40,7 +36,15 @@ const CONFIG = {
   minAtrPercent: 0.01,
 
   // Gold priority
-  goldPriorityBonus: 3
+  goldPriorityBonus: 3,
+
+  // Gold V5.2 filters
+  goldMinAdx15: 15,
+  goldMinAdx1h: 20,
+
+  // Gold extra confirmations
+  goldAlignmentBonus: 8,
+  goldTrendBonus: 5
 };
 
 
@@ -173,12 +177,26 @@ Multi-Timeframe Analysis
 </p>
 
 <p class="badge">
-V5.1 Diagnostic
+V5.2 Gold Focus
 </p>
 
 <p>
 15-minute signal analysis with 1-hour confirmation.
 </p>
+</div>
+
+<div class="card">
+
+<h2>Gold Analysis</h2>
+
+<p>
+XAU/USD receives special multi-timeframe filtering.
+</p>
+
+<p>
+15m trend + 1h trend + ADX + EMA + RSI + MACD + ATR
+</p>
+
 </div>
 
 <div class="card">
@@ -226,8 +244,8 @@ and timeframes.
 </p>
 
 <p>
-XAU/USD is processed first and diagnostic information is
-returned when a signal is rejected.
+XAU/USD is processed first and receives additional
+trend and alignment validation.
 </p>
 
 </div>
@@ -385,7 +403,7 @@ async function health(env) {
     return json({
       ok: true,
       service: "forex-signal-engine",
-      version: "V5.1",
+      version: "V5.2",
       database:
         result?.database_ok === 1
           ? "connected"
@@ -398,7 +416,7 @@ async function health(env) {
     return json({
       ok: false,
       service: "forex-signal-engine",
-      version: "V5.1",
+      version: "V5.2",
       error:
         error?.message ||
         String(error)
@@ -1351,7 +1369,7 @@ function convertTo100(
 
 
 // ============================================================
-// BUILD SIGNAL + DIAGNOSTICS
+// BUILD SIGNAL V5.2
 // ============================================================
 
 function buildSignal(
@@ -1379,7 +1397,10 @@ function buildSignal(
   }
 
 
-  // Closed candles only
+  // ----------------------------------------------------------
+  // CLOSED CANDLES ONLY
+  // ----------------------------------------------------------
+
   const closed15 =
     candles15.slice(
       0,
@@ -1404,17 +1425,23 @@ function buildSignal(
     );
 
 
-  // Raw scores
-  let buyRaw =
+  // ----------------------------------------------------------
+  // RAW SCORES
+  // ----------------------------------------------------------
+
+  const buyRaw =
     analysis15.buyScore +
     analysis1h.buyScore;
 
-  let sellRaw =
+  const sellRaw =
     analysis15.sellScore +
     analysis1h.sellScore;
 
 
-  // Base scores before Gold priority
+  // ----------------------------------------------------------
+  // BASE SCORES
+  // ----------------------------------------------------------
+
   const baseBuyScore =
     convertTo100(
       analysis15.buyScore,
@@ -1428,7 +1455,6 @@ function buildSignal(
     );
 
 
-  // Gold priority is applied ONCE
   let finalBuyScore =
     baseBuyScore;
 
@@ -1436,36 +1462,323 @@ function buildSignal(
     baseSellScore;
 
 
+  let goldTrendDirection = null;
+  let goldAlignment = null;
+  let goldFilterPassed = true;
+  let goldFilterReason = null;
+
+
+  // ==========================================================
+  // GOLD SPECIAL LOGIC
+  // ==========================================================
+
   if (
     symbol === "XAU/USD"
   ) {
 
+    // --------------------------------------------------------
+    // 1. 15m ADX
+    // --------------------------------------------------------
+
     if (
-      baseBuyScore >
-      baseSellScore
+      !Number.isFinite(
+        analysis15.adx
+      ) ||
+      analysis15.adx <
+      CONFIG.goldMinAdx15
+    ) {
+
+      goldFilterPassed = false;
+
+      goldFilterReason =
+        "GOLD_15M_ADX_TOO_LOW";
+    }
+
+
+    // --------------------------------------------------------
+    // 2. 1h ADX
+    // --------------------------------------------------------
+
+    if (
+      goldFilterPassed &&
+      (
+        !Number.isFinite(
+          analysis1h.adx
+        ) ||
+        analysis1h.adx <
+        CONFIG.goldMinAdx1h
+      )
+    ) {
+
+      goldFilterPassed = false;
+
+      goldFilterReason =
+        "GOLD_1H_ADX_TOO_LOW";
+    }
+
+
+    // --------------------------------------------------------
+    // 3. 1H TREND
+    // --------------------------------------------------------
+
+    const bullish1h =
+      analysis1h.price >
+      analysis1h.ema20 &&
+      analysis1h.ema20 >
+      analysis1h.ema50 &&
+      analysis1h.price >
+      analysis1h.ema200;
+
+    const bearish1h =
+      analysis1h.price <
+      analysis1h.ema20 &&
+      analysis1h.ema20 <
+      analysis1h.ema50 &&
+      analysis1h.price <
+      analysis1h.ema200;
+
+
+    if (bullish1h) {
+
+      goldTrendDirection =
+        "BUY";
+
+    } else if (bearish1h) {
+
+      goldTrendDirection =
+        "SELL";
+
+    } else {
+
+      goldTrendDirection =
+        "NEUTRAL";
+    }
+
+
+    // --------------------------------------------------------
+    // 4. 15M TREND
+    // --------------------------------------------------------
+
+    const bullish15 =
+      analysis15.price >
+      analysis15.ema20 &&
+      analysis15.ema20 >
+      analysis15.ema50;
+
+    const bearish15 =
+      analysis15.price <
+      analysis15.ema20 &&
+      analysis15.ema20 <
+      analysis15.ema50;
+
+
+    // --------------------------------------------------------
+    // 5. ALIGNMENT
+    // --------------------------------------------------------
+
+    if (
+      bullish15 &&
+      bullish1h
+    ) {
+
+      goldAlignment =
+        "BUY";
+
+    } else if (
+      bearish15 &&
+      bearish1h
+    ) {
+
+      goldAlignment =
+        "SELL";
+
+    } else {
+
+      goldAlignment =
+        "MIXED";
+    }
+
+
+    // --------------------------------------------------------
+    // 6. 1H TREND BONUS
+    // --------------------------------------------------------
+
+    if (
+      goldTrendDirection ===
+      "BUY"
     ) {
 
       finalBuyScore =
         Math.min(
           100,
-          baseBuyScore +
-          CONFIG.goldPriorityBonus
+          finalBuyScore +
+          CONFIG.goldTrendBonus
         );
 
     } else if (
-      baseSellScore >
-      baseBuyScore
+      goldTrendDirection ===
+      "SELL"
     ) {
 
       finalSellScore =
         Math.min(
           100,
-          baseSellScore +
+          finalSellScore +
+          CONFIG.goldTrendBonus
+        );
+    }
+
+
+    // --------------------------------------------------------
+    // 7. 15M + 1H ALIGNMENT BONUS
+    // --------------------------------------------------------
+
+    if (
+      goldAlignment ===
+      "BUY"
+    ) {
+
+      finalBuyScore =
+        Math.min(
+          100,
+          finalBuyScore +
+          CONFIG.goldAlignmentBonus
+        );
+
+    } else if (
+      goldAlignment ===
+      "SELL"
+    ) {
+
+      finalSellScore =
+        Math.min(
+          100,
+          finalSellScore +
+          CONFIG.goldAlignmentBonus
+        );
+    }
+
+
+    // --------------------------------------------------------
+    // 8. GOLD PRIORITY BONUS
+    // --------------------------------------------------------
+
+    if (
+      finalBuyScore >
+      finalSellScore
+    ) {
+
+      finalBuyScore =
+        Math.min(
+          100,
+          finalBuyScore +
+          CONFIG.goldPriorityBonus
+        );
+
+    } else if (
+      finalSellScore >
+      finalBuyScore
+    ) {
+
+      finalSellScore =
+        Math.min(
+          100,
+          finalSellScore +
           CONFIG.goldPriorityBonus
         );
     }
+
+
+    // --------------------------------------------------------
+    // 9. GOLD FILTER REJECTION
+    // --------------------------------------------------------
+
+    if (
+      !goldFilterPassed
+    ) {
+
+      return {
+        signal: null,
+
+        diagnostics: {
+          symbol,
+          status: "REJECTED",
+
+          reason:
+            goldFilterReason,
+
+          buyScore:
+            finalBuyScore,
+
+          sellScore:
+            finalSellScore,
+
+          scoreGap:
+            Math.abs(
+              finalBuyScore -
+              finalSellScore
+            ),
+
+          requiredScore:
+            CONFIG.minScore,
+
+          requiredGap:
+            CONFIG.minScoreGap,
+
+          rawBuyScore:
+            buyRaw,
+
+          rawSellScore:
+            sellRaw,
+
+          price15m:
+            analysis15.price,
+
+          rsi15m:
+            analysis15.rsi,
+
+          rsi1h:
+            analysis1h.rsi,
+
+          adx15m:
+            analysis15.adx,
+
+          adx1h:
+            analysis1h.adx,
+
+          atr15m:
+            analysis15.atr,
+
+          goldTrendDirection,
+
+          goldAlignment,
+
+          goldMinAdx15:
+            CONFIG.goldMinAdx15,
+
+          goldMinAdx1h:
+            CONFIG.goldMinAdx1h,
+
+          buyReasons15m:
+            analysis15.buyReasons,
+
+          sellReasons15m:
+            analysis15.sellReasons,
+
+          buyReasons1h:
+            analysis1h.buyReasons,
+
+          sellReasons1h:
+            analysis1h.sellReasons
+        }
+      };
+    }
   }
 
+
+  // ==========================================================
+  // FINAL GAP
+  // ==========================================================
 
   const gap =
     Math.abs(
@@ -1477,11 +1790,13 @@ function buildSignal(
   let direction = null;
   let score = 0;
   let reasons = [];
-  let rejectionReason =
-    null;
+  let rejectionReason = null;
 
 
+  // ==========================================================
   // BUY
+  // ==========================================================
+
   if (
     finalBuyScore >=
       CONFIG.minScore &&
@@ -1491,16 +1806,45 @@ function buildSignal(
   ) {
 
     direction = "BUY";
-    score = finalBuyScore;
+
+    score =
+      finalBuyScore;
 
     reasons = [
       ...analysis15.buyReasons,
       ...analysis1h.buyReasons
     ];
+
+
+    if (
+      symbol === "XAU/USD" &&
+      goldTrendDirection ===
+      "BUY"
+    ) {
+
+      reasons.push(
+        "Gold 1h bullish trend confirmed"
+      );
+    }
+
+
+    if (
+      symbol === "XAU/USD" &&
+      goldAlignment ===
+      "BUY"
+    ) {
+
+      reasons.push(
+        "Gold 15m/1h alignment confirmed"
+      );
+    }
   }
 
 
+  // ==========================================================
   // SELL
+  // ==========================================================
+
   else if (
     finalSellScore >=
       CONFIG.minScore &&
@@ -1510,16 +1854,45 @@ function buildSignal(
   ) {
 
     direction = "SELL";
-    score = finalSellScore;
+
+    score =
+      finalSellScore;
 
     reasons = [
       ...analysis15.sellReasons,
       ...analysis1h.sellReasons
     ];
+
+
+    if (
+      symbol === "XAU/USD" &&
+      goldTrendDirection ===
+      "SELL"
+    ) {
+
+      reasons.push(
+        "Gold 1h bearish trend confirmed"
+      );
+    }
+
+
+    if (
+      symbol === "XAU/USD" &&
+      goldAlignment ===
+      "SELL"
+    ) {
+
+      reasons.push(
+        "Gold 15m/1h alignment confirmed"
+      );
+    }
   }
 
 
-  // Diagnostics
+  // ==========================================================
+  // REJECTED
+  // ==========================================================
+
   if (!direction) {
 
     if (
@@ -1596,6 +1969,16 @@ function buildSignal(
         atr15m:
           analysis15.atr,
 
+        goldTrendDirection:
+          symbol === "XAU/USD"
+            ? goldTrendDirection
+            : null,
+
+        goldAlignment:
+          symbol === "XAU/USD"
+            ? goldAlignment
+            : null,
+
         buyReasons15m:
           analysis15.buyReasons,
 
@@ -1611,6 +1994,10 @@ function buildSignal(
     };
   }
 
+
+  // ==========================================================
+  // ENTRY / ATR
+  // ==========================================================
 
   const entry =
     analysis15.price;
@@ -1632,9 +2019,14 @@ function buildSignal(
       diagnostics: {
         symbol,
         status: "REJECTED",
-        reason: "INVALID_PRICE_OR_ATR",
+
+        reason:
+          "INVALID_PRICE_OR_ATR",
+
         entry,
-        atr: atrValue,
+        atr:
+          atrValue,
+
         score
       }
     };
@@ -1658,18 +2050,28 @@ function buildSignal(
       diagnostics: {
         symbol,
         status: "REJECTED",
-        reason: "ATR_TOO_LOW",
-        atr: atrValue,
+
+        reason:
+          "ATR_TOO_LOW",
+
+        atr:
+          atrValue,
+
         atrPercent,
+
         requiredAtrPercent:
           CONFIG.minAtrPercent,
+
         score
       }
     };
   }
 
 
-  // Risk / Reward
+  // ==========================================================
+  // RISK / REWARD
+  // ==========================================================
+
   const risk =
     atrValue *
     CONFIG.atrMultiplier;
@@ -1716,6 +2118,10 @@ function buildSignal(
       : "GOOD";
 
 
+  // ==========================================================
+  // FINAL SIGNAL
+  // ==========================================================
+
   const signal = {
     symbol,
 
@@ -1754,7 +2160,24 @@ function buildSignal(
         analysis15,
 
       confirmation1h:
-        analysis1h
+        analysis1h,
+
+      gold:
+        symbol === "XAU/USD"
+          ? {
+              trend:
+                goldTrendDirection,
+
+              alignment:
+                goldAlignment,
+
+              adx15m:
+                analysis15.adx,
+
+              adx1h:
+                analysis1h.adx
+            }
+          : null
     }
   };
 
@@ -1764,13 +2187,34 @@ function buildSignal(
 
     diagnostics: {
       symbol,
-      status: "APPROVED",
+
+      status:
+        "APPROVED",
+
       direction,
+
       score,
-      buyScore: finalBuyScore,
-      sellScore: finalSellScore,
-      scoreGap: gap,
-      atrPercent
+
+      buyScore:
+        finalBuyScore,
+
+      sellScore:
+        finalSellScore,
+
+      scoreGap:
+        gap,
+
+      atrPercent,
+
+      goldTrendDirection:
+        symbol === "XAU/USD"
+          ? goldTrendDirection
+          : null,
+
+      goldAlignment:
+        symbol === "XAU/USD"
+          ? goldAlignment
+          : null
     }
   };
 }
@@ -1953,7 +2397,7 @@ function formatSignal(
 
   const reasons =
     signal.reasons
-      .slice(0, 8)
+      .slice(0, 10)
       .map(
         x => "• " + x
       )
@@ -2091,11 +2535,6 @@ async function runEngine(env) {
   const generated = [];
 
 
-  // Important:
-  // Even when max open signals is reached,
-  // we return diagnostics so the engine
-  // does not look like it is simply broken.
-
   if (
     openSignals >=
     CONFIG.maxOpenSignals
@@ -2103,7 +2542,7 @@ async function runEngine(env) {
 
     return {
       ok: true,
-      version: "V5.1",
+      version: "V5.2",
       generated: [],
       generatedCount: 0,
       openSignals,
@@ -2116,7 +2555,7 @@ async function runEngine(env) {
   }
 
 
-  // Gold is intentionally first.
+  // XAU/USD is always processed first.
   for (
     const symbol
     of CONFIG.symbols
@@ -2262,7 +2701,7 @@ VALUES
   return {
     ok: true,
 
-    version: "V5.1",
+    version: "V5.2",
 
     generated,
 
@@ -2290,7 +2729,19 @@ VALUES
         CONFIG.minAtrPercent,
 
       goldPriorityBonus:
-        CONFIG.goldPriorityBonus
+        CONFIG.goldPriorityBonus,
+
+      goldMinAdx15:
+        CONFIG.goldMinAdx15,
+
+      goldMinAdx1h:
+        CONFIG.goldMinAdx1h,
+
+      goldAlignmentBonus:
+        CONFIG.goldAlignmentBonus,
+
+      goldTrendBonus:
+        CONFIG.goldTrendBonus
     },
 
     time:
@@ -2414,7 +2865,7 @@ WHERE symbol = 'XAU/USD'`
   return json({
     ok: true,
 
-    version: "V5.1",
+    version: "V5.2",
 
     totalSignals:
       Number(total?.count || 0),
@@ -2542,11 +2993,13 @@ updated_at = excluded.updated_at`
     await sendTelegramToChat(
       env,
       chatId,
-`GOLD & FOREX SIGNAL ENGINE
+`GOLD & FOREX SIGNAL ENGINE V5.2
 
 You are subscribed.
 
 XAU/USD is the priority market.
+
+Gold is analyzed using 15m + 1h confirmation.
 
 Commands:
 
@@ -2639,7 +3092,7 @@ WHERE symbol = 'XAU/USD'`
     await sendTelegramToChat(
       env,
       chatId,
-`GOLD & FOREX ENGINE STATS
+`GOLD & FOREX ENGINE V5.2
 
 Total signals: ${total?.count || 0}
 
