@@ -3308,31 +3308,153 @@ function htmlResponse(
 
 
 // ============================================================
+// SITEMAP
+// ============================================================
+
+function sitemapXml(origin) {
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url>
+    <loc>${origin}/</loc>
+  </url>
+</urlset>`;
+}
+
+
+// ============================================================
 // HOME PAGE
 // ============================================================
 
 function homePage() {
 
   return `<!DOCTYPE html>
-
 <html lang="fa" dir="rtl">
-
 <head>
-
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Forex Signal Engine V2 | موتور سیگنال فارکس</title>
+<meta name="description" content="موتور تحلیل چندتایم‌فریمی بازار فارکس با EMA، RSI، MACD، ATR و ADX.">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: Tahoma, Arial, sans-serif;
+    background: linear-gradient(135deg, #0f172a, #1e293b);
+    color: #e2e8f0;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+  }
+  .card {
+    max-width: 640px;
+    width: 100%;
+    background: rgba(30, 41, 59, 0.7);
+    border: 1px solid rgba(148, 163, 184, 0.2);
+    border-radius: 16px;
+    padding: 32px;
+    box-shadow: 0 20px 40px rgba(0,0,0,0.3);
+  }
+  h1 {
+    font-size: 24px;
+    margin-bottom: 8px;
+    color: #38bdf8;
+  }
+  p.subtitle {
+    color: #94a3b8;
+    margin-bottom: 24px;
+    font-size: 14px;
+  }
+  .status {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    background: rgba(34,197,94,0.15);
+    color: #4ade80;
+    border: 1px solid rgba(34,197,94,0.3);
+    padding: 6px 14px;
+    border-radius: 999px;
+    font-size: 13px;
+    margin-bottom: 24px;
+  }
+  .dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #4ade80;
+  }
+  .links {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+  }
+  a.link {
+    display: block;
+    background: rgba(51,65,85,0.6);
+    border: 1px solid rgba(148,163,184,0.15);
+    border-radius: 10px;
+    padding: 14px;
+    color: #e2e8f0;
+    text-decoration: none;
+    font-size: 14px;
+    transition: background 0.15s;
+  }
+  a.link:hover {
+    background: rgba(56,189,248,0.15);
+    border-color: rgba(56,189,248,0.4);
+  }
+  .symbols {
+    margin-top: 24px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .symbol {
+    background: rgba(56,189,248,0.1);
+    color: #7dd3fc;
+    border: 1px solid rgba(56,189,248,0.25);
+    padding: 4px 10px;
+    border-radius: 999px;
+    font-size: 12px;
+  }
+  footer {
+    margin-top: 24px;
+    font-size: 12px;
+    color: #64748b;
+    text-align: center;
+  }
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="status"><span class="dot"></span> فعال — V2</div>
+    <h1>موتور سیگنال فارکس</h1>
+    <p class="subtitle">
+      تحلیل چندتایم‌فریمی (15 دقیقه / 1 ساعت) با EMA، RSI، MACD، ATR و ADX،
+      همراه با ارسال خودکار سیگنال به تلگرام.
+    </p>
 
-<meta
-name="viewport"
-content="width=device-width,initial-scale=1"
->
+    <div class="symbols">
+      <span class="symbol">EUR/USD</span>
+      <span class="symbol">GBP/USD</span>
+      <span class="symbol">USD/JPY</span>
+      <span class="symbol">XAU/USD</span>
+    </div>
 
-<title>
-Forex Signal Engine V2 | موتور سیگنال فارکس
-</title>
+    <div class="links" style="margin-top:24px;">
+      <a class="link" href="/health">وضعیت سلامت (health)</a>
+      <a class="link" href="/api/stats">آمار عملکرد (stats)</a>
+      <a class="link" href="/api/signals">سیگنال‌های اخیر</a>
+      <a class="link" href="/run">اجرای دستی موتور</a>
+      <a class="link" href="/setup-chat">اتصال چت تلگرام</a>
+      <a class="link" href="/robots.txt">robots.txt</a>
+    </div>
 
-<meta
-name="description"
-content="موتور تحلیل چندتایم‌فریمی بازار فارکس با EMA، RSI، MACD، ATR و ADX."
->
-
-<meta
+    <footer>
+      این ابزار تحلیلی است و هیچ سیگنالی تضمین سود نیست. مدیریت ریسک با شماست.
+    </footer>
+  </div>
+</body>
+</html>`;
+}
