@@ -5,19 +5,17 @@
 // PRIMARY FOCUS:
 // XAU/USD
 //
-// DESIGN:
-// - GOLD FIRST
-// - Only 2 Twelve Data requests per fresh GOLD cycle:
-//   15min + 1h
-// - Indicators calculated locally
-// - Cloudflare Cache API used
-// - Telegram only after valid signal
-// - No API spam from dashboard refresh
-// - Other symbols are secondary / cached
+// TELEGRAM:
+// - Automatic GOLD signals
+// - /start
+// - /status
+// - Incoming message replies
+// - Secure webhook by configured Chat ID
 //
 // IMPORTANT:
-// - Telegram token MUST remain in Cloudflare Secret
-// - Twelve Data key MUST remain in Cloudflare Secret
+// - Telegram token remains in Cloudflare Secret
+// - Twelve Data key remains in Cloudflare Secret
+// - Telegram Chat ID remains in Cloudflare Variable
 // - No profit guarantee
 // ============================================================
 
@@ -70,12 +68,7 @@ const CONFIG = {
   // API CACHE
   // -----------------------------
   goldCacheSeconds: 50,
-
-  // Do not refresh gold more often than this.
   goldRefreshSeconds: 55,
-
-  // Other symbols are intentionally
-  // not refreshed during normal GOLD runs.
   secondaryCacheSeconds: 300,
 
   // -----------------------------
@@ -141,20 +134,12 @@ function round(value, decimals = 2) {
   return Math.round(value * p) / p;
 }
 
-function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
-
 function nowMs() {
   return Date.now();
 }
 
 function normalizeSymbol(symbol) {
   return String(symbol || "").trim().toUpperCase();
-}
-
-function isGold(symbol) {
-  return normalizeSymbol(symbol) === "XAU/USD";
 }
 
 // ============================================================
@@ -207,7 +192,9 @@ async function twelveDataTimeSeries(
   const apiKey = getTwelveDataKey(env);
 
   if (!apiKey) {
-    throw new Error("Twelve Data API key is missing");
+    throw new Error(
+      "Twelve Data API key is missing"
+    );
   }
 
   const outputsize =
@@ -287,8 +274,6 @@ function parseCandles(data) {
       Number.isFinite(c.close)
     );
 
-  // Twelve Data normally returns newest first.
-  // Indicators need oldest -> newest.
   candles.reverse();
 
   return candles;
@@ -298,22 +283,6 @@ function parseCandles(data) {
 // LOCAL INDICATORS
 // ============================================================
 
-function sma(values, period) {
-  if (values.length < period) return null;
-
-  let sum = 0;
-
-  for (
-    let i = values.length - period;
-    i < values.length;
-    i++
-  ) {
-    sum += values[i];
-  }
-
-  return sum / period;
-}
-
 function emaSeries(values, period) {
   if (values.length < period) return [];
 
@@ -322,42 +291,45 @@ function emaSeries(values, period) {
   const multiplier =
     2 / (period + 1);
 
-  let ema =
+  let emaValue =
     values
       .slice(0, period)
       .reduce((a, b) => a + b, 0) / period;
 
-  result.push(ema);
+  result.push(emaValue);
 
   for (
     let i = period;
     i < values.length;
     i++
   ) {
-    ema =
-      ((values[i] - ema) * multiplier) +
-      ema;
+    emaValue =
+      ((values[i] - emaValue) * multiplier) +
+      emaValue;
 
-    result.push(ema);
+    result.push(emaValue);
   }
 
   return result;
 }
 
 function ema(values, period) {
-  const series = emaSeries(values, period);
+  const series =
+    emaSeries(values, period);
 
   if (!series.length) return null;
 
   return series[series.length - 1];
 }
 
-// ------------------------------------------------------------
+// ============================================================
 // RSI
-// ------------------------------------------------------------
+// ============================================================
 
 function rsi(values, period = 14) {
-  if (values.length < period + 1) return null;
+  if (values.length < period + 1) {
+    return null;
+  }
 
   let gain = 0;
   let loss = 0;
@@ -366,12 +338,18 @@ function rsi(values, period = 14) {
     const diff =
       values[i] - values[i - 1];
 
-    if (diff >= 0) gain += diff;
-    else loss += Math.abs(diff);
+    if (diff >= 0) {
+      gain += diff;
+    } else {
+      loss += Math.abs(diff);
+    }
   }
 
-  let avgGain = gain / period;
-  let avgLoss = loss / period;
+  let avgGain =
+    gain / period;
+
+  let avgLoss =
+    loss / period;
 
   for (
     let i = period + 1;
@@ -396,7 +374,9 @@ function rsi(values, period = 14) {
         currentLoss) / period;
   }
 
-  if (avgLoss === 0) return 100;
+  if (avgLoss === 0) {
+    return 100;
+  }
 
   const rs =
     avgGain / avgLoss;
@@ -404,9 +384,9 @@ function rsi(values, period = 14) {
   return 100 - (100 / (1 + rs));
 }
 
-// ------------------------------------------------------------
+// ============================================================
 // MACD
-// ------------------------------------------------------------
+// ============================================================
 
 function macd(values) {
   if (values.length < 35) {
@@ -417,15 +397,19 @@ function macd(values) {
     };
   }
 
-  const ema12 = emaSeries(values, 12);
-  const ema26 = emaSeries(values, 26);
+  const ema12 =
+    emaSeries(values, 12);
+
+  const ema26 =
+    emaSeries(values, 26);
 
   const macdSeries = [];
 
-  const offset =
-    12 - 1;
-
-  for (let i = 0; i < ema26.length; i++) {
+  for (
+    let i = 0;
+    i < ema26.length;
+    i++
+  ) {
     const ema12Index =
       i + (26 - 12);
 
@@ -451,7 +435,9 @@ function macd(values) {
     emaSeries(macdSeries, 9);
 
   const macdValue =
-    macdSeries[macdSeries.length - 1];
+    macdSeries[
+      macdSeries.length - 1
+    ];
 
   const signalValue =
     signalSeries[
@@ -466,9 +452,9 @@ function macd(values) {
   };
 }
 
-// ------------------------------------------------------------
+// ============================================================
 // ATR
-// ------------------------------------------------------------
+// ============================================================
 
 function atr(candles, period = 14) {
   if (candles.length < period + 1) {
@@ -477,23 +463,31 @@ function atr(candles, period = 14) {
 
   const trs = [];
 
-  for (let i = 1; i < candles.length; i++) {
-    const current = candles[i];
-    const previous = candles[i - 1];
+  for (
+    let i = 1;
+    i < candles.length;
+    i++
+  ) {
+    const current =
+      candles[i];
 
-    const tr = Math.max(
-      current.high - current.low,
+    const previous =
+      candles[i - 1];
 
-      Math.abs(
-        current.high -
-        previous.close
-      ),
+    const tr =
+      Math.max(
+        current.high - current.low,
 
-      Math.abs(
-        current.low -
-        previous.close
-      )
-    );
+        Math.abs(
+          current.high -
+          previous.close
+        ),
+
+        Math.abs(
+          current.low -
+          previous.close
+        )
+      );
 
     trs.push(tr);
   }
@@ -521,12 +515,15 @@ function atr(candles, period = 14) {
   return value;
 }
 
-// ------------------------------------------------------------
+// ============================================================
 // ADX / DI
-// ------------------------------------------------------------
+// ============================================================
 
 function adx(candles, period = 14) {
-  if (candles.length < period * 2 + 2) {
+  if (
+    candles.length <
+    period * 2 + 2
+  ) {
     return {
       adx: null,
       plusDI: null,
@@ -538,15 +535,24 @@ function adx(candles, period = 14) {
   const plusDM = [];
   const minusDM = [];
 
-  for (let i = 1; i < candles.length; i++) {
-    const current = candles[i];
-    const previous = candles[i - 1];
+  for (
+    let i = 1;
+    i < candles.length;
+    i++
+  ) {
+    const current =
+      candles[i];
+
+    const previous =
+      candles[i - 1];
 
     const upMove =
-      current.high - previous.high;
+      current.high -
+      previous.high;
 
     const downMove =
-      previous.low - current.low;
+      previous.low -
+      current.low;
 
     let pDM = 0;
     let mDM = 0;
@@ -565,26 +571,31 @@ function adx(candles, period = 14) {
       mDM = downMove;
     }
 
-    const tr = Math.max(
-      current.high - current.low,
-
-      Math.abs(
+    const tr =
+      Math.max(
         current.high -
-        previous.close
-      ),
+          current.low,
 
-      Math.abs(
-        current.low -
-        previous.close
-      )
-    );
+        Math.abs(
+          current.high -
+          previous.close
+        ),
+
+        Math.abs(
+          current.low -
+          previous.close
+        )
+      );
 
     trs.push(tr);
     plusDM.push(pDM);
     minusDM.push(mDM);
   }
 
-  if (trs.length < period * 2) {
+  if (
+    trs.length <
+    period * 2
+  ) {
     return {
       adx: null,
       plusDI: null,
@@ -637,12 +648,16 @@ function adx(candles, period = 14) {
     lastPlusDI =
       trSmooth === 0
         ? 0
-        : 100 * plusSmooth / trSmooth;
+        : 100 *
+          plusSmooth /
+          trSmooth;
 
     lastMinusDI =
       trSmooth === 0
         ? 0
-        : 100 * minusSmooth / trSmooth;
+        : 100 *
+          minusSmooth /
+          trSmooth;
 
     const denominator =
       lastPlusDI +
@@ -661,7 +676,10 @@ function adx(candles, period = 14) {
     dxValues.push(dx);
   }
 
-  if (dxValues.length < period) {
+  if (
+    dxValues.length <
+    period
+  ) {
     return {
       adx: null,
       plusDI: lastPlusDI,
@@ -692,15 +710,17 @@ function adx(candles, period = 14) {
   };
 }
 
-// ------------------------------------------------------------
+// ============================================================
 // MOMENTUM
-// ------------------------------------------------------------
+// ============================================================
 
 function momentumPercent(
   values,
   lookback = 10
 ) {
-  if (values.length <= lookback) {
+  if (
+    values.length <= lookback
+  ) {
     return null;
   }
 
@@ -708,9 +728,15 @@ function momentumPercent(
     values[values.length - 1];
 
   const previous =
-    values[values.length - 1 - lookback];
+    values[
+      values.length -
+      1 -
+      lookback
+    ];
 
-  if (!previous) return null;
+  if (!previous) {
+    return null;
+  }
 
   return (
     ((current - previous) /
@@ -719,12 +745,17 @@ function momentumPercent(
   );
 }
 
-// ------------------------------------------------------------
+// ============================================================
 // BREAKOUT
-// ------------------------------------------------------------
+// ============================================================
 
-function breakout(candles, lookback = 20) {
-  if (candles.length <= lookback) {
+function breakout(
+  candles,
+  lookback = 20
+) {
+  if (
+    candles.length <= lookback
+  ) {
     return "NONE";
   }
 
@@ -733,43 +764,64 @@ function breakout(candles, lookback = 20) {
 
   const previous =
     candles.slice(
-      candles.length - 1 - lookback,
+      candles.length -
+        1 -
+        lookback,
+
       candles.length - 1
     );
 
   const highest =
     Math.max(
-      ...previous.map(c => c.high)
+      ...previous.map(
+        c => c.high
+      )
     );
 
   const lowest =
     Math.min(
-      ...previous.map(c => c.low)
+      ...previous.map(
+        c => c.low
+      )
     );
 
-  if (current.close > highest) {
+  if (
+    current.close >
+    highest
+  ) {
     return "BULLISH";
   }
 
-  if (current.close < lowest) {
+  if (
+    current.close <
+    lowest
+  ) {
     return "BEARISH";
   }
 
   return "NONE";
 }
 
-// ------------------------------------------------------------
-// CANDLE DIRECTION
-// ------------------------------------------------------------
+// ============================================================
+// CANDLE
+// ============================================================
 
 function candleDirection(candle) {
-  if (!candle) return "NEUTRAL";
+  if (!candle) {
+    return "NEUTRAL";
+  }
 
-  if (candle.close > candle.open) {
+  if (
+    candle.close >
+    candle.open
+  ) {
     return "BULLISH";
   }
 
-  if (candle.close < candle.open) {
+  if (
+    candle.close <
+    candle.open
+  ) {
     return "BEARISH";
   }
 
@@ -777,16 +829,22 @@ function candleDirection(candle) {
 }
 
 function candleBodyRatio(candle) {
-  if (!candle) return 0;
+  if (!candle) {
+    return 0;
+  }
 
   const range =
-    candle.high - candle.low;
+    candle.high -
+    candle.low;
 
-  if (range <= 0) return 0;
+  if (range <= 0) {
+    return 0;
+  }
 
   return (
     Math.abs(
-      candle.close - candle.open
+      candle.close -
+      candle.open
     ) / range
   );
 }
@@ -808,13 +866,21 @@ function getTrend(
   }
 
   const closes =
-    candles.map(c => c.close);
+    candles.map(
+      c => c.close
+    );
 
   const fast =
-    ema(closes, fastPeriod);
+    ema(
+      closes,
+      fastPeriod
+    );
 
   const slow =
-    ema(closes, slowPeriod);
+    ema(
+      closes,
+      slowPeriod
+    );
 
   if (
     fast === null ||
@@ -824,7 +890,9 @@ function getTrend(
   }
 
   const last =
-    closes[closes.length - 1];
+    closes[
+      closes.length - 1
+    ];
 
   if (
     fast > slow &&
@@ -847,10 +915,11 @@ function getTrend(
 // ANALYZE TIMEFRAME
 // ============================================================
 
-function analyzeTimeframe(
-  candles
-) {
-  if (!candles || candles.length < 60) {
+function analyzeTimeframe(candles) {
+  if (
+    !candles ||
+    candles.length < 60
+  ) {
     throw new Error(
       "Not enough candle data"
     );
@@ -863,10 +932,14 @@ function analyzeTimeframe(
       : candles;
 
   const closes =
-    working.map(c => c.close);
+    working.map(
+      c => c.close
+    );
 
   const last =
-    working[working.length - 1];
+    working[
+      working.length - 1
+    ];
 
   const trend =
     getTrend(working);
@@ -884,10 +957,16 @@ function analyzeTimeframe(
     atr(working, 14);
 
   const momentum =
-    momentumPercent(closes, 10);
+    momentumPercent(
+      closes,
+      10
+    );
 
   const breakoutValue =
-    breakout(working, 20);
+    breakout(
+      working,
+      20
+    );
 
   const candle =
     candleDirection(last);
@@ -902,25 +981,39 @@ function analyzeTimeframe(
 
     rsi: rsiValue,
 
-    macd: macdValue.macd,
-    macdSignal: macdValue.signal,
-    macdHistogram: macdValue.histogram,
+    macd:
+      macdValue.macd,
 
-    adx: adxValue.adx,
-    plusDI: adxValue.plusDI,
-    minusDI: adxValue.minusDI,
+    macdSignal:
+      macdValue.signal,
 
-    atr: atrValue,
+    macdHistogram:
+      macdValue.histogram,
+
+    adx:
+      adxValue.adx,
+
+    plusDI:
+      adxValue.plusDI,
+
+    minusDI:
+      adxValue.minusDI,
+
+    atr:
+      atrValue,
 
     momentum,
 
-    breakout: breakoutValue,
+    breakout:
+      breakoutValue,
 
     candle,
 
-    candleBodyRatio: bodyRatio,
+    candleBodyRatio:
+      bodyRatio,
 
-    datetime: last.datetime
+    datetime:
+      last.datetime
   };
 }
 
@@ -933,34 +1026,37 @@ function analyzeGold(
   candles1h
 ) {
   const tf15 =
-    analyzeTimeframe(candles15m);
+    analyzeTimeframe(
+      candles15m
+    );
 
   const tf1h =
-    analyzeTimeframe(candles1h);
+    analyzeTimeframe(
+      candles1h
+    );
 
   const alignment =
-    tf15.trend === tf1h.trend
+    tf15.trend ===
+    tf1h.trend
       ? tf15.trend
       : "MIXED";
 
   let score = 0;
 
-  // ---------------------------------
   // 15M TREND
-  // ---------------------------------
-
-  if (tf15.trend === "BULLISH") {
+  if (
+    tf15.trend === "BULLISH"
+  ) {
     score += 15;
   }
 
-  if (tf15.trend === "BEARISH") {
+  if (
+    tf15.trend === "BEARISH"
+  ) {
     score += 15;
   }
 
-  // ---------------------------------
   // 1H CONFIRMATION
-  // ---------------------------------
-
   if (
     tf1h.trend === "BULLISH" ||
     tf1h.trend === "BEARISH"
@@ -968,46 +1064,40 @@ function analyzeGold(
     score += 20;
   }
 
-  // ---------------------------------
   // ALIGNMENT
-  // ---------------------------------
-
-  if (alignment === "BULLISH") {
+  if (
+    alignment === "BULLISH" ||
+    alignment === "BEARISH"
+  ) {
     score += 10;
   }
 
-  if (alignment === "BEARISH") {
-    score += 10;
-  }
-
-  // ---------------------------------
   // MACD
-  // ---------------------------------
-
   if (
     tf15.macd !== null &&
     tf15.macdSignal !== null
   ) {
     if (
       tf15.trend === "BULLISH" &&
-      tf15.macd > tf15.macdSignal
+      tf15.macd >
+        tf15.macdSignal
     ) {
       score += 15;
     }
 
     if (
       tf15.trend === "BEARISH" &&
-      tf15.macd < tf15.macdSignal
+      tf15.macd <
+        tf15.macdSignal
     ) {
       score += 15;
     }
   }
 
-  // ---------------------------------
   // RSI
-  // ---------------------------------
-
-  if (tf15.rsi !== null) {
+  if (
+    tf15.rsi !== null
+  ) {
     if (
       tf15.trend === "BULLISH" &&
       tf15.rsi >= 50 &&
@@ -1025,10 +1115,7 @@ function analyzeGold(
     }
   }
 
-  // ---------------------------------
   // ADX / DI
-  // ---------------------------------
-
   if (
     tf15.adx !== null &&
     tf15.plusDI !== null &&
@@ -1048,72 +1135,67 @@ function analyzeGold(
     }
   }
 
-  // ---------------------------------
   // MOMENTUM
-  // ---------------------------------
-
-  if (tf15.momentum !== null) {
+  if (
+    tf15.momentum !== null
+  ) {
     if (
       tf15.trend === "BULLISH" &&
-      tf15.momentum >= CONFIG.minMomentum
+      tf15.momentum >=
+        CONFIG.minMomentum
     ) {
       score += 10;
     }
 
     if (
       tf15.trend === "BEARISH" &&
-      tf15.momentum <= -CONFIG.minMomentum
+      tf15.momentum <=
+        -CONFIG.minMomentum
     ) {
       score += 10;
     }
   }
 
-  // ---------------------------------
   // BREAKOUT
-  // ---------------------------------
-
   if (
-    tf15.breakout === tf15.trend
+    tf15.breakout ===
+    tf15.trend
   ) {
     score += 5;
   }
 
-  // ---------------------------------
   // CANDLE
-  // ---------------------------------
-
   if (
-    tf15.candle === tf15.trend &&
+    tf15.candle ===
+      tf15.trend &&
     tf15.candleBodyRatio >=
       CONFIG.candleBodyMin
   ) {
     score += 5;
   }
 
-  // ---------------------------------
   // CONFLICT PENALTY
-  // ---------------------------------
-
   if (
     tf1h.trend !== "NEUTRAL" &&
-    tf15.trend !== tf1h.trend
+    tf15.trend !==
+      tf1h.trend
   ) {
     score *= 0.60;
   }
 
-  score = Math.round(
-    Math.min(100, score)
-  );
+  score =
+    Math.round(
+      Math.min(100, score)
+    );
 
-  // ---------------------------------
   // SIGNAL CONDITIONS
-  // ---------------------------------
 
   let signal = "WAIT";
 
   const strong15m =
     tf15.adx !== null &&
-    tf15.adx >= CONFIG.minADX;
+    tf15.adx >=
+      CONFIG.minADX;
 
   const diBull =
     tf15.plusDI !== null &&
@@ -1150,15 +1232,14 @@ function analyzeGold(
       -CONFIG.minMomentum;
 
   const candleBull =
-    tf15.candle === "BULLISH";
+    tf15.candle ===
+    "BULLISH";
 
   const candleBear =
-    tf15.candle === "BEARISH";
+    tf15.candle ===
+    "BEARISH";
 
-  // ---------------------------------
-  // GOLD BUY
-  // ---------------------------------
-
+  // BUY
   const buySetup =
     tf15.trend === "BULLISH" &&
     macdBull &&
@@ -1167,10 +1248,7 @@ function analyzeGold(
     momentumBull &&
     candleBull;
 
-  // ---------------------------------
-  // GOLD SELL
-  // ---------------------------------
-
+  // SELL
   const sellSetup =
     tf15.trend === "BEARISH" &&
     macdBear &&
@@ -1181,46 +1259,69 @@ function analyzeGold(
 
   if (
     buySetup &&
-    score >= CONFIG.goldMinScore
+    score >=
+      CONFIG.goldMinScore
   ) {
-    signal = "BUY LIMIT";
+    signal =
+      "BUY LIMIT";
   }
 
   if (
     sellSetup &&
-    score >= CONFIG.goldMinScore
+    score >=
+      CONFIG.goldMinScore
   ) {
-    signal = "SELL LIMIT";
+    signal =
+      "SELL LIMIT";
   }
 
   const result = {
     symbol: "XAU/USD",
+
     signal,
 
-    price: tf15.price,
+    price:
+      tf15.price,
 
-    trend15m: tf15.trend,
-    trend1h: tf1h.trend,
+    trend15m:
+      tf15.trend,
+
+    trend1h:
+      tf1h.trend,
 
     alignment,
 
     score,
 
-    rsi: tf15.rsi,
-    macd: tf15.macd,
-    macdSignal: tf15.macdSignal,
+    rsi:
+      tf15.rsi,
 
-    adx: tf15.adx,
-    plusDI: tf15.plusDI,
-    minusDI: tf15.minusDI,
+    macd:
+      tf15.macd,
 
-    atr: tf15.atr,
+    macdSignal:
+      tf15.macdSignal,
 
-    momentum: tf15.momentum,
+    adx:
+      tf15.adx,
 
-    breakout: tf15.breakout,
+    plusDI:
+      tf15.plusDI,
 
-    candle: tf15.candle,
+    minusDI:
+      tf15.minusDI,
+
+    atr:
+      tf15.atr,
+
+    momentum:
+      tf15.momentum,
+
+    breakout:
+      tf15.breakout,
+
+    candle:
+      tf15.candle,
 
     candleBodyRatio:
       tf15.candleBodyRatio,
@@ -1257,8 +1358,12 @@ function buildTradePlan(
   atrValue
 ) {
   if (
-    !Number.isFinite(currentPrice) ||
-    !Number.isFinite(atrValue) ||
+    !Number.isFinite(
+      currentPrice
+    ) ||
+    !Number.isFinite(
+      atrValue
+    ) ||
     atrValue <= 0
   ) {
     return null;
@@ -1278,7 +1383,9 @@ function buildTradePlan(
   let tp2;
   let tp3;
 
-  if (signal === "BUY LIMIT") {
+  if (
+    signal === "BUY LIMIT"
+  ) {
     entry =
       currentPrice -
       limitDistance;
@@ -1300,7 +1407,9 @@ function buildTradePlan(
       entry +
       risk *
       CONFIG.tp3RiskReward;
+
   } else {
+
     entry =
       currentPrice +
       limitDistance;
@@ -1325,19 +1434,31 @@ function buildTradePlan(
   }
 
   return {
-    entry: round(entry, 2),
-    stopLoss: round(stopLoss, 2),
-    tp1: round(tp1, 2),
-    tp2: round(tp2, 2),
-    tp3: round(tp3, 2),
+    entry:
+      round(entry, 2),
 
-    risk: round(risk, 2),
-    atr: round(atrValue, 2)
+    stopLoss:
+      round(stopLoss, 2),
+
+    tp1:
+      round(tp1, 2),
+
+    tp2:
+      round(tp2, 2),
+
+    tp3:
+      round(tp3, 2),
+
+    risk:
+      round(risk, 2),
+
+    atr:
+      round(atrValue, 2)
   };
 }
 
 // ============================================================
-// TELEGRAM
+// TELEGRAM OUTGOING
 // ============================================================
 
 function formatGoldTelegram(result) {
@@ -1349,7 +1470,8 @@ function formatGoldTelegram(result) {
   }
 
   const isBuy =
-    result.signal === "BUY LIMIT";
+    result.signal ===
+    "BUY LIMIT";
 
   const icon =
     isBuy ? "📈" : "📉";
@@ -1399,6 +1521,37 @@ async function sendTelegram(
     };
   }
 
+  return await sendTelegramToChat(
+    chatId,
+    text,
+    env
+  );
+}
+
+async function sendTelegramToChat(
+  chatId,
+  text,
+  env
+) {
+  const token =
+    getTelegramToken(env);
+
+  if (!token) {
+    return {
+      ok: false,
+      error:
+        "TELEGRAM_BOT_TOKEN is missing"
+    };
+  }
+
+  if (!chatId) {
+    return {
+      ok: false,
+      error:
+        "Telegram chat_id is missing"
+    };
+  }
+
   const url =
     `https://api.telegram.org/bot${token}/sendMessage`;
 
@@ -1413,8 +1566,11 @@ async function sendTelegram(
         },
 
         body: JSON.stringify({
-          chat_id: chatId,
+          chat_id:
+            chatId,
+
           text,
+
           disable_web_page_preview:
             true
         })
@@ -1438,16 +1594,349 @@ async function sendTelegram(
         response.ok &&
         data.ok === true,
 
-      response: data
+      response:
+        data
     };
 
   } catch (error) {
+
     return {
       ok: false,
       error:
         error?.message ||
         String(error)
     };
+  }
+}
+
+// ============================================================
+// TELEGRAM /START
+// ============================================================
+
+async function telegramStart(
+  chatId,
+  env
+) {
+  const text =
+`🟢 Hakim Gold Signals
+
+به ربات سیگنال فارکس خوش آمدید.
+
+💎 تمرکز اصلی:
+XAU/USD GOLD
+
+⏱ تایم‌فریم:
+15M + 1H
+
+📊 موتور:
+FOREX SIGNAL ENGINE V5.5
+
+دستورات:
+
+/start
+شروع و معرفی ربات
+
+/status
+وضعیت موتور و اتصال تلگرام
+
+سیگنال‌های معتبر طلا به‌صورت خودکار ارسال می‌شوند.
+
+⚠️ سیگنال‌ها تضمین سود نیستند.
+مدیریت سرمایه و ریسک بر عهده معامله‌گر است.
+
+Hakim Gold Signals`;
+
+  return await sendTelegramToChat(
+    chatId,
+    text,
+    env
+  );
+}
+
+// ============================================================
+// TELEGRAM /STATUS
+// ============================================================
+
+async function telegramStatus(
+  chatId,
+  env
+) {
+  const state =
+    await getSignalState();
+
+  const telegramConfigured =
+    Boolean(
+      getTelegramToken(env)
+    ) &&
+    Boolean(
+      getTelegramChatId(env)
+    );
+
+  const twelveDataConfigured =
+    Boolean(
+      getTwelveDataKey(env)
+    );
+
+  let lastSignal =
+    "ندارد";
+
+  if (state?.signal) {
+    lastSignal =
+      state.signal;
+  }
+
+  const text =
+`📊 وضعیت Hakim Gold Signals
+
+🟢 موتور: فعال
+
+⚙️ نسخه: ${CONFIG.version}
+
+💎 تمرکز: XAU/USD
+
+⏱ تایم‌فریم:
+15M + 1H
+
+📡 Telegram:
+${telegramConfigured ? "🟢 متصل" : "🔴 تنظیم نشده"}
+
+📈 Twelve Data:
+${twelveDataConfigured ? "🟢 متصل" : "🔴 تنظیم نشده"}
+
+📨 آخرین سیگنال:
+${lastSignal}
+
+🔄 ارسال خودکار:
+فعال
+
+⏱ فاصله سیگنال تکراری:
+${CONFIG.signalCooldownMinutes} دقیقه
+
+⚠️ سیگنال‌ها تضمین سود نیستند.`;
+
+  return await sendTelegramToChat(
+    chatId,
+    text,
+    env
+  );
+}
+
+// ============================================================
+// TELEGRAM INCOMING WEBHOOK
+// ============================================================
+
+async function handleTelegramWebhook(
+  request,
+  env
+) {
+  if (
+    request.method !== "POST"
+  ) {
+    return json({
+      ok: false,
+      error:
+        "POST only"
+    }, 405);
+  }
+
+  let update;
+
+  try {
+    update =
+      await request.json();
+  } catch {
+    return json({
+      ok: false,
+      error:
+        "Invalid JSON"
+    }, 400);
+  }
+
+  const message =
+    update?.message;
+
+  if (!message) {
+    return json({
+      ok: true,
+      ignored: true
+    });
+  }
+
+  const chatId =
+    String(
+      message.chat?.id ||
+      ""
+    );
+
+  const configuredChatId =
+    String(
+      getTelegramChatId(env) ||
+      ""
+    );
+
+  // -----------------------------------------
+  // SECURITY
+  // Only configured Chat ID can control bot.
+  // -----------------------------------------
+
+  if (
+    !chatId ||
+    !configuredChatId ||
+    chatId !==
+      configuredChatId
+  ) {
+    return json({
+      ok: true,
+      ignored: true
+    });
+  }
+
+  const text =
+    String(
+      message.text || ""
+    )
+      .trim()
+      .toLowerCase();
+
+  // -----------------------------------------
+  // /START
+  // -----------------------------------------
+
+  if (
+    text === "/start" ||
+    text.startsWith("/start ")
+  ) {
+    await telegramStart(
+      chatId,
+      env
+    );
+
+    return json({
+      ok: true,
+      command:
+        "/start"
+    });
+  }
+
+  // -----------------------------------------
+  // /STATUS
+  // -----------------------------------------
+
+  if (
+    text === "/status" ||
+    text.startsWith("/status ")
+  ) {
+    await telegramStatus(
+      chatId,
+      env
+    );
+
+    return json({
+      ok: true,
+      command:
+        "/status"
+    });
+  }
+
+  // -----------------------------------------
+  // OTHER MESSAGES
+  // -----------------------------------------
+
+  const reply =
+`🤖 Hakim Gold Signals
+
+پیام دریافت شد.
+
+دستورات فعال:
+
+/start
+/status
+
+💎 تمرکز اصلی: XAU/USD`;
+
+  await sendTelegramToChat(
+    chatId,
+    reply,
+    env
+  );
+
+  return json({
+    ok: true,
+    command:
+      "message"
+  });
+}
+
+// ============================================================
+// TELEGRAM WEBHOOK SETUP
+// ============================================================
+
+async function setTelegramWebhook(
+  request,
+  env
+) {
+  const token =
+    getTelegramToken(env);
+
+  if (!token) {
+    return json({
+      ok: false,
+      error:
+        "TELEGRAM_BOT_TOKEN is missing"
+    }, 500);
+  }
+
+  const origin =
+    new URL(
+      request.url
+    ).origin;
+
+  const webhookUrl =
+    `${origin}/telegram-webhook`;
+
+  const url =
+    `https://api.telegram.org/bot${token}/setWebhook`;
+
+  try {
+
+    const response =
+      await fetch(url, {
+        method: "POST",
+
+        headers: {
+          "content-type":
+            "application/json"
+        },
+
+        body: JSON.stringify({
+          url:
+            webhookUrl
+        })
+      });
+
+    const data =
+      await response.json();
+
+    return json({
+      ok:
+        response.ok &&
+        data.ok === true,
+
+      webhook:
+        webhookUrl,
+
+      telegram:
+        data
+    });
+
+  } catch (error) {
+
+    return json({
+      ok: false,
+      error:
+        error?.message ||
+        String(error)
+    }, 500);
   }
 }
 
@@ -1475,15 +1964,20 @@ async function getSignalState() {
   }
 }
 
-async function setSignalState(state) {
+async function setSignalState(
+  state
+) {
   await cachePut(
     SIGNAL_STATE_KEY,
     state,
-    CONFIG.signalCooldownMinutes * 60
+    CONFIG.signalCooldownMinutes *
+      60
   );
 }
 
-async function canSendSignal(signal) {
+async function canSendSignal(
+  signal
+) {
   const state =
     await getSignalState();
 
@@ -1492,14 +1986,17 @@ async function canSendSignal(signal) {
   }
 
   if (
-    state.signal !== signal
+    state.signal !==
+    signal
   ) {
     return true;
   }
 
   const elapsed =
     nowMs() -
-    Number(state.time || 0);
+    Number(
+      state.time || 0
+    );
 
   return (
     elapsed >=
@@ -1513,7 +2010,9 @@ async function canSendSignal(signal) {
 // GOLD DATA CACHE
 // ============================================================
 
-function goldCacheKey(interval) {
+function goldCacheKey(
+  interval
+) {
   return (
     "https://forex-signal-engine.local/" +
     `gold/${interval}`
@@ -1526,23 +2025,32 @@ async function getGoldCandles(
   force = false
 ) {
   const key =
-    goldCacheKey(interval);
+    goldCacheKey(
+      interval
+    );
 
   if (!force) {
+
     const cached =
       await cacheGet(key);
 
     if (cached) {
+
       try {
+
         const data =
           await cached.json();
 
         return {
-          candles: data.candles,
+          candles:
+            data.candles,
+
           cached: true,
+
           fetchedAt:
             data.fetchedAt
         };
+
       } catch {
         // Ignore corrupt cache.
       }
@@ -1563,7 +2071,9 @@ async function getGoldCandles(
   const candles =
     parseCandles(data);
 
-  if (candles.length < 60) {
+  if (
+    candles.length < 60
+  ) {
     throw new Error(
       `${interval}: insufficient candles`
     );
@@ -1571,6 +2081,7 @@ async function getGoldCandles(
 
   const payload = {
     candles,
+
     fetchedAt:
       new Date().toISOString()
   };
@@ -1583,7 +2094,9 @@ async function getGoldCandles(
 
   return {
     candles,
+
     cached: false,
+
     fetchedAt:
       payload.fetchedAt
   };
@@ -1599,11 +2112,6 @@ async function analyzeGoldEngine(
 ) {
   const force =
     options.force === true;
-
-  // -----------------------------------------
-  // ONLY TWO TWELVE DATA CALLS:
-  // 15M + 1H
-  // -----------------------------------------
 
   const data15 =
     await getGoldCandles(
@@ -1652,7 +2160,9 @@ async function analyzeGoldEngine(
 // RUN ENGINE
 // ============================================================
 
-async function runEngine(env) {
+async function runEngine(
+  env
+) {
   const generatedAt =
     new Date().toISOString();
 
@@ -1674,8 +2184,11 @@ async function runEngine(env) {
 
     stats: {
       runs: 1,
+
       signals: 0,
+
       telegramSent: 0,
+
       telegramFailed: 0,
 
       lastRun:
@@ -1687,9 +2200,8 @@ async function runEngine(env) {
   };
 
   try {
-    // -----------------------------------------
+
     // GOLD FIRST
-    // -----------------------------------------
 
     const gold =
       await analyzeGoldEngine(
@@ -1699,17 +2211,21 @@ async function runEngine(env) {
         }
       );
 
-    result.results.push(gold);
+    result.results.push(
+      gold
+    );
 
-    // -----------------------------------------
     // SEND TELEGRAM
-    // -----------------------------------------
 
     if (
-      gold.signal === "BUY LIMIT" ||
-      gold.signal === "SELL LIMIT"
+      gold.signal ===
+        "BUY LIMIT" ||
+      gold.signal ===
+        "SELL LIMIT"
     ) {
-      result.stats.signals = 1;
+
+      result.stats.signals =
+        1;
 
       result.stats.lastSignal =
         gold.signal;
@@ -1720,8 +2236,11 @@ async function runEngine(env) {
         );
 
       if (allowed) {
+
         const message =
-          formatGoldTelegram(gold);
+          formatGoldTelegram(
+            gold
+          );
 
         const telegram =
           await sendTelegram(
@@ -1729,7 +2248,10 @@ async function runEngine(env) {
             env
           );
 
-        if (telegram.ok) {
+        if (
+          telegram.ok
+        ) {
+
           result.stats.telegramSent =
             1;
 
@@ -1743,7 +2265,9 @@ async function runEngine(env) {
             entry:
               gold.tradePlan?.entry
           });
+
         } else {
+
           result.stats.telegramFailed =
             1;
 
@@ -1753,23 +2277,19 @@ async function runEngine(env) {
         }
 
       } else {
+
         result.telegram =
           "COOLDOWN";
       }
     }
 
-    // -----------------------------------------
     // SECONDARY SYMBOLS
-    //
-    // IMPORTANT:
-    // We DO NOT call Twelve Data here.
-    // This prevents API-credit exhaustion.
-    // -----------------------------------------
 
     for (
       const symbol of
       CONFIG.symbols
     ) {
+
       if (
         symbol ===
         CONFIG.primarySymbol
@@ -1779,9 +2299,13 @@ async function runEngine(env) {
 
       result.results.push({
         symbol,
-        signal: "WAIT",
+
+        signal:
+          "WAIT",
+
         status:
           "GOLD_PRIORITY",
+
         message:
           "Secondary symbols are not refreshed during the Gold Priority cycle."
       });
@@ -1790,17 +2314,17 @@ async function runEngine(env) {
     return result;
 
   } catch (error) {
+
     result.ok = false;
 
     result.error =
       error?.message ||
       String(error);
 
-    // -----------------------------------------
-    // Still return useful information.
-    // -----------------------------------------
+    if (
+      !result.results.length
+    ) {
 
-    if (!result.results.length) {
       result.results.push({
         symbol:
           CONFIG.primarySymbol,
@@ -1821,7 +2345,9 @@ async function runEngine(env) {
 // TELEGRAM TEST
 // ============================================================
 
-async function telegramTest(env) {
+async function telegramTest(
+  env
+) {
   const text =
 `🟢 Hakim Gold Signals
 
@@ -1880,6 +2406,14 @@ function health(env) {
         getTwelveDataKey(env)
       ),
 
+    webhookPath:
+      "/telegram-webhook",
+
+    commands: [
+      "/start",
+      "/status"
+    ],
+
     timestamp:
       new Date().toISOString()
   };
@@ -1906,15 +2440,16 @@ async function stats() {
     lastSignalState:
       state || null,
 
-    cache:
-      {
-        strategy:
-          "Gold 15M + 1H cached",
-        goldRefreshSeconds:
-          CONFIG.goldRefreshSeconds,
-        goldCacheSeconds:
-          CONFIG.goldCacheSeconds
-      },
+    cache: {
+      strategy:
+        "Gold 15M + 1H cached",
+
+      goldRefreshSeconds:
+        CONFIG.goldRefreshSeconds,
+
+      goldCacheSeconds:
+        CONFIG.goldCacheSeconds
+    },
 
     timestamp:
       new Date().toISOString()
@@ -1927,21 +2462,27 @@ async function stats() {
 
 export default {
 
-  async fetch(request, env, ctx) {
+  async fetch(
+    request,
+    env,
+    ctx
+  ) {
+
     const url =
-      new URL(request.url);
+      new URL(
+        request.url
+      );
 
     const path =
       url.pathname;
 
-    // -----------------------------------------
     // HOME
-    // -----------------------------------------
 
     if (
       path === "/" ||
       path === ""
     ) {
+
       return new Response(
         dashboardHTML(),
         {
@@ -1953,26 +2494,25 @@ export default {
       );
     }
 
-    // -----------------------------------------
     // HEALTH
-    // -----------------------------------------
 
     if (
       path === "/health"
     ) {
+
       return json(
         health(env)
       );
     }
 
-    // -----------------------------------------
     // API SIGNALS
-    // -----------------------------------------
 
     if (
       path === "/api/signals"
     ) {
+
       try {
+
         const result =
           await analyzeGoldEngine(
             env,
@@ -1988,12 +2528,17 @@ export default {
                 s !==
                 CONFIG.primarySymbol
             )
-            .map(symbol => ({
-              symbol,
-              signal: "WAIT",
-              status:
-                "GOLD_PRIORITY"
-            }));
+            .map(
+              symbol => ({
+                symbol,
+
+                signal:
+                  "WAIT",
+
+                status:
+                  "GOLD_PRIORITY"
+              })
+            );
 
         return json({
           ok: true,
@@ -2014,6 +2559,7 @@ export default {
         });
 
       } catch (error) {
+
         return json({
           ok: false,
 
@@ -2038,47 +2584,78 @@ export default {
       }
     }
 
-    // -----------------------------------------
     // RUN
-    // -----------------------------------------
 
     if (
       path === "/run"
     ) {
-      const result =
-        await runEngine(env);
 
-      return json(result);
+      const result =
+        await runEngine(
+          env
+        );
+
+      return json(
+        result
+      );
     }
 
-    // -----------------------------------------
     // TELEGRAM TEST
-    // -----------------------------------------
 
     if (
       path === "/telegram-test"
     ) {
-      const result =
-        await telegramTest(env);
 
-      return json(result);
+      const result =
+        await telegramTest(
+          env
+        );
+
+      return json(
+        result
+      );
     }
 
-    // -----------------------------------------
+    // TELEGRAM WEBHOOK
+
+    if (
+      path ===
+      "/telegram-webhook"
+    ) {
+
+      return await
+        handleTelegramWebhook(
+          request,
+          env
+        );
+    }
+
+    // SET TELEGRAM WEBHOOK
+
+    if (
+      path ===
+      "/telegram-set-webhook"
+    ) {
+
+      return await
+        setTelegramWebhook(
+          request,
+          env
+        );
+    }
+
     // STATS
-    // -----------------------------------------
 
     if (
       path === "/api/stats"
     ) {
+
       return json(
         await stats()
       );
     }
 
-    // -----------------------------------------
     // NOT FOUND
-    // -----------------------------------------
 
     return json({
       error:
@@ -2086,11 +2663,16 @@ export default {
     }, 404);
   },
 
-  // ========================================================
+  // ==========================================================
   // CRON
-  // ========================================================
+  // ==========================================================
 
-  async scheduled(event, env, ctx) {
+  async scheduled(
+    event,
+    env,
+    ctx
+  ) {
+
     ctx.waitUntil(
       runEngine(env)
     );
@@ -2102,10 +2684,15 @@ export default {
 // ============================================================
 
 function dashboardHTML() {
+
   return `<!doctype html>
+
 <html lang="fa" dir="rtl">
+
 <head>
+
 <meta charset="UTF-8">
+
 <meta name="viewport"
 content="width=device-width,initial-scale=1">
 
@@ -2121,6 +2708,7 @@ content="width=device-width,initial-scale=1">
 
 body {
   margin: 0;
+
   font-family:
     Arial,
     Tahoma,
@@ -2135,12 +2723,15 @@ body {
 
 .container {
   max-width: 900px;
+
   margin: auto;
+
   padding: 18px;
 }
 
 .header {
   padding: 20px;
+
   border-radius: 18px;
 
   background:
@@ -2155,45 +2746,62 @@ body {
 
 h1 {
   margin: 0 0 8px;
+
   font-size: 22px;
 }
 
 .subtitle {
-  color: #aab3c5;
+  color:
+    #aab3c5;
 }
 
 .card {
-  background: #121a2d;
+  background:
+    #121a2d;
+
   border-radius: 18px;
+
   padding: 18px;
+
   margin-bottom: 14px;
-  border: 1px solid #26314a;
+
+  border:
+    1px solid #26314a;
 }
 
 .gold {
-  border: 1px solid #c7a84b;
+  border:
+    1px solid #c7a84b;
 }
 
 .symbol {
   font-size: 20px;
+
   font-weight: bold;
 }
 
 .price {
   font-size: 30px;
+
   margin: 12px 0;
 }
 
 .signal {
   display: inline-block;
+
   padding: 8px 14px;
+
   border-radius: 12px;
-  background: #26314a;
+
+  background:
+    #26314a;
+
   font-weight: bold;
 }
 
 .grid {
   display: grid;
+
   grid-template-columns:
     repeat(2, 1fr);
 
@@ -2203,43 +2811,60 @@ h1 {
 }
 
 .metric {
-  background: #0d1425;
+  background:
+    #0d1425;
+
   border-radius: 12px;
+
   padding: 10px;
 }
 
 .label {
-  color: #8f9bb3;
+  color:
+    #8f9bb3;
+
   font-size: 12px;
 }
 
 .value {
   font-size: 16px;
+
   margin-top: 5px;
 }
 
 .plan {
   margin-top: 15px;
+
   padding: 14px;
-  background: #0d1425;
+
+  background:
+    #0d1425;
+
   border-radius: 14px;
 }
 
 .footer {
   text-align: center;
-  color: #75819a;
+
+  color:
+    #75819a;
+
   margin-top: 18px;
+
   font-size: 12px;
 }
 
 @media(max-width:600px) {
+
   .grid {
     grid-template-columns:
       1fr 1fr;
   }
+
 }
 
 </style>
+
 </head>
 
 <body>
@@ -2272,13 +2897,19 @@ Gold Priority · XAU/USD · 15M + 1H
 
 <script>
 
-function value(v, decimals = 2) {
+function value(
+  v,
+  decimals = 2
+) {
 
   if (
     v === null ||
     v === undefined ||
-    !Number.isFinite(Number(v))
+    !Number.isFinite(
+      Number(v)
+    )
   ) {
+
     return "-";
   }
 
@@ -2293,6 +2924,7 @@ function metric(
 
   return \`
     <div class="metric">
+
       <div class="label">
         \${label}
       </div>
@@ -2300,6 +2932,7 @@ function metric(
       <div class="value">
         \${val}
       </div>
+
     </div>
   \`;
 }
@@ -2316,7 +2949,9 @@ function renderGold(r) {
     planHTML = \`
       <div class="plan">
 
-        <b>برنامه معامله</b>
+        <b>
+          برنامه معامله
+        </b>
 
         \${metric(
           "نقطه ورود",
@@ -2377,7 +3012,8 @@ function renderGold(r) {
 
         \${metric(
           "امتیاز",
-          (r.score ?? "-") + "/100"
+          (r.score ?? "-") +
+          "/100"
         )}
 
         \${metric(
@@ -2412,7 +3048,8 @@ function renderGold(r) {
 
         \${metric(
           "Momentum",
-          value(r.momentum) + "%"
+          value(r.momentum) +
+          "%"
         )}
 
         \${metric(
@@ -2446,9 +3083,11 @@ function renderSecondary(r) {
         margin-top:10px;
         color:#8f9bb3;
       ">
+
         این نماد در چرخه اصلی API
         برای کاهش مصرف اعتبار
         Twelve Data به‌روزرسانی نمی‌شود.
+
       </div>
 
     </div>
@@ -2463,7 +3102,8 @@ async function load() {
       await fetch(
         "/api/signals",
         {
-          cache: "no-store"
+          cache:
+            "no-store"
         }
       );
 
@@ -2474,6 +3114,7 @@ async function load() {
       !data.results ||
       !data.results.length
     ) {
+
       throw new Error(
         "No results"
       );
@@ -2482,18 +3123,21 @@ async function load() {
     const gold =
       data.results.find(
         r =>
-          r.symbol === "XAU/USD"
+          r.symbol ===
+          "XAU/USD"
       );
 
     const secondary =
       data.results.filter(
         r =>
-          r.symbol !== "XAU/USD"
+          r.symbol !==
+          "XAU/USD"
       );
 
     let html = "";
 
     if (gold) {
+
       html +=
         renderGold(gold);
     }
@@ -2501,13 +3145,15 @@ async function load() {
     for (
       const r of secondary
     ) {
+
       html +=
         renderSecondary(r);
     }
 
     document
       .getElementById("app")
-      .innerHTML = html;
+      .innerHTML =
+        html;
 
   } catch (error) {
 
@@ -2525,7 +3171,9 @@ async function load() {
             margin-top:10px;
             color:#aab3c5;
           ">
+
             \${error.message}
+
           </div>
 
         </div>
@@ -2543,5 +3191,6 @@ setInterval(
 </script>
 
 </body>
+
 </html>`;
     }
