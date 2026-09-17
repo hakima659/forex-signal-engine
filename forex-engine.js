@@ -51,6 +51,530 @@ const CONFIG = {
 };
 
 // ============================================================
+// DASHBOARD HTML (served at /)
+// ============================================================
+
+const DASHBOARD_HTML = `<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>موتور سیگنال فارکس — V5.2</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=Vazirmatn:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #12151a;
+    --bg-raised: #171b21;
+    --bg-card: #1a1f26;
+    --border: #262c35;
+    --border-soft: #1f242c;
+    --text: #e8e9ec;
+    --text-dim: #8b92a0;
+    --text-faint: #565d6b;
+    --gold: #c9a44c;
+    --gold-dim: #8a7239;
+    --red: #c1503f;
+    --red-dim: #7a3830;
+    --neutral: #5a636f;
+    --mono: 'IBM Plex Mono', monospace;
+    --sans: 'Vazirmatn', sans-serif;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    min-height: 100vh;
+    padding: 20px 16px 60px;
+  }
+
+  .wrap { max-width: 920px; margin: 0 auto; }
+
+  header {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding-bottom: 20px;
+    border-bottom: 1px solid var(--border-soft);
+    margin-bottom: 24px;
+  }
+
+  header h1 {
+    font-size: 19px;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+  }
+
+  header .meta {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--text-faint);
+    direction: ltr;
+    text-align: left;
+  }
+
+  .status-line {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--text-dim);
+    margin-bottom: 28px;
+  }
+
+  .dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--text-faint);
+    flex-shrink: 0;
+  }
+
+  .dot.live { background: var(--gold); box-shadow: 0 0 0 3px rgba(201,164,76,0.15); }
+  .dot.error { background: var(--red); box-shadow: 0 0 0 3px rgba(193,80,63,0.15); }
+
+  /* Hero card: primary symbol */
+  .hero {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 28px 24px;
+    margin-bottom: 16px;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .hero::before {
+    content: "";
+    position: absolute;
+    top: 0; right: 0;
+    width: 3px;
+    height: 100%;
+    background: var(--signal-color, var(--neutral));
+  }
+
+  .hero-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    margin-bottom: 18px;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+
+  .hero-symbol {
+    font-family: var(--mono);
+    font-size: 13px;
+    color: var(--text-dim);
+    letter-spacing: 0.03em;
+    margin-bottom: 6px;
+  }
+
+  .hero-price {
+    font-family: var(--mono);
+    font-size: 42px;
+    font-weight: 600;
+    line-height: 1;
+    direction: ltr;
+    text-align: left;
+  }
+
+  .signal-badge {
+    font-family: var(--mono);
+    font-size: 13px;
+    font-weight: 600;
+    padding: 6px 14px;
+    border-radius: 3px;
+    border: 1px solid var(--signal-color, var(--neutral));
+    color: var(--signal-color, var(--neutral));
+    white-space: nowrap;
+    height: fit-content;
+  }
+
+  .hero-sub {
+    display: flex;
+    gap: 24px;
+    flex-wrap: wrap;
+    font-size: 13px;
+    color: var(--text-dim);
+  }
+
+  .hero-sub b { color: var(--text); font-weight: 500; }
+
+  .score-bar-wrap {
+    margin-top: 18px;
+  }
+
+  .score-bar-label {
+    display: flex;
+    justify-content: space-between;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--text-faint);
+    margin-bottom: 6px;
+  }
+
+  .score-bar {
+    height: 4px;
+    background: var(--border);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+
+  .score-bar-fill {
+    height: 100%;
+    background: var(--signal-color, var(--neutral));
+    border-radius: 2px;
+    transition: width 0.6s ease;
+  }
+
+  /* Indicator grid inside hero */
+  .indicators {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(90px, 1fr));
+    gap: 14px;
+    margin-top: 20px;
+    padding-top: 18px;
+    border-top: 1px solid var(--border-soft);
+  }
+
+  .ind-item .ind-label {
+    font-size: 11px;
+    color: var(--text-faint);
+    margin-bottom: 3px;
+  }
+
+  .ind-item .ind-value {
+    font-family: var(--mono);
+    font-size: 14px;
+    color: var(--text);
+    direction: ltr;
+  }
+
+  /* Secondary pairs grid */
+  .section-label {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--text-faint);
+    margin: 28px 0 12px;
+  }
+
+  .pairs-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 12px;
+  }
+
+  .pair-card {
+    background: var(--bg-raised);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 16px 18px;
+    position: relative;
+  }
+
+  .pair-card::before {
+    content: "";
+    position: absolute;
+    top: 0; right: 0;
+    width: 3px;
+    height: 100%;
+    background: var(--signal-color, var(--neutral));
+  }
+
+  .pair-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 10px;
+  }
+
+  .pair-symbol {
+    font-family: var(--mono);
+    font-size: 13px;
+    color: var(--text);
+    font-weight: 500;
+  }
+
+  .pair-signal {
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--signal-color, var(--neutral));
+  }
+
+  .pair-price {
+    font-family: var(--mono);
+    font-size: 22px;
+    font-weight: 600;
+    direction: ltr;
+    text-align: left;
+    margin-bottom: 10px;
+  }
+
+  .pair-meta {
+    display: flex;
+    justify-content: space-between;
+    font-size: 12px;
+    color: var(--text-dim);
+  }
+
+  .pair-meta span b { color: var(--text-dim); font-family: var(--mono); }
+
+  /* Loading / error states */
+  .state-box {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 40px 24px;
+    text-align: center;
+    color: var(--text-dim);
+    font-size: 14px;
+  }
+
+  .state-box.error { border-color: var(--red-dim); color: #d98276; }
+
+  .state-box .retry {
+    margin-top: 14px;
+    display: inline-block;
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--text);
+    background: var(--bg-raised);
+    border: 1px solid var(--border);
+    padding: 8px 16px;
+    border-radius: 3px;
+    cursor: pointer;
+  }
+
+  .state-box .retry:hover { border-color: var(--text-faint); }
+
+  footer {
+    margin-top: 40px;
+    padding-top: 16px;
+    border-top: 1px solid var(--border-soft);
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--text-faint);
+    display: flex;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  @media (max-width: 560px) {
+    .hero-price { font-size: 32px; }
+    .indicators { grid-template-columns: repeat(2, 1fr); }
+  }
+
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) {
+      --bg: #f5f4f1;
+      --bg-raised: #ffffff;
+      --bg-card: #ffffff;
+      --border: #e2e0da;
+      --border-soft: #ebe9e3;
+      --text: #1c1c1a;
+      --text-dim: #6b6a64;
+      --text-faint: #a3a199;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #12151a;
+    --bg-raised: #171b21;
+    --bg-card: #1a1f26;
+    --border: #262c35;
+    --border-soft: #1f242c;
+    --text: #e8e9ec;
+    --text-dim: #8b92a0;
+    --text-faint: #565d6b;
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>موتور سیگنال فارکس <span style="color:var(--text-faint); font-weight:400;">V5.2</span></h1>
+    <div class="meta" id="lastUpdate">—</div>
+  </header>
+
+  <div class="status-line">
+    <span class="dot" id="statusDot"></span>
+    <span id="statusText">در حال اتصال...</span>
+  </div>
+
+  <div id="content">
+    <div class="state-box">در حال دریافت سیگنال‌ها...</div>
+  </div>
+
+  <footer>
+    <span>تحلیل ۱۵ دقیقه‌ای + تأیید ۱ ساعته</span>
+    <span id="refreshCountdown">رفرش خودکار: ۶۰ ثانیه</span>
+  </footer>
+</div>
+
+<script>
+(function () {
+  const REFRESH_MS = 60000;
+  const API_PATH = "/api/signals";
+
+  const SIGNAL_LABEL = { BUY: "خرید", SELL: "فروش", WAIT: "صبر کن" };
+  const SIGNAL_COLOR = { BUY: "var(--gold)", SELL: "var(--red)", WAIT: "var(--neutral)" };
+
+  function fmtNumber(n, decimals) {
+    if (typeof n !== "number" || !isFinite(n)) return "—";
+    return n.toFixed(decimals != null ? decimals : 2);
+  }
+
+  function fmtTime(iso) {
+    try {
+      const d = new Date(iso);
+      return d.toLocaleTimeString("fa-IR", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    } catch (e) {
+      return iso;
+    }
+  }
+
+  function renderHero(sig) {
+    const color = SIGNAL_COLOR[sig.signal] || SIGNAL_COLOR.WAIT;
+    const label = SIGNAL_LABEL[sig.signal] || sig.signal;
+
+    return \`
+      <div class="hero" style="--signal-color:\${color}">
+        <div class="hero-top">
+          <div>
+            <div class="hero-symbol">\${sig.symbol} — نماد اصلی</div>
+            <div class="hero-price">\${fmtNumber(sig.price, 5)}</div>
+          </div>
+          <div class="signal-badge">\${label} · \${sig.strength}</div>
+        </div>
+        <div class="hero-sub">
+          <span>روند ۱۵ دقیقه: <b>\${sig.trend_15m}</b></span>
+          <span>روند ۱ ساعته: <b>\${sig.trend_1h}</b></span>
+          <span>هم‌راستایی: <b>\${sig.analysis.multi_timeframe}</b></span>
+        </div>
+        <div class="score-bar-wrap">
+          <div class="score-bar-label"><span>امتیاز تحلیل</span><span>\${sig.score}/100</span></div>
+          <div class="score-bar"><div class="score-bar-fill" style="width:\${sig.score}%"></div></div>
+        </div>
+        <div class="indicators">
+          <div class="ind-item"><div class="ind-label">RSI 14</div><div class="ind-value">\${fmtNumber(sig.indicators.rsi14, 2)}</div></div>
+          <div class="ind-item"><div class="ind-label">MACD</div><div class="ind-value">\${fmtNumber(sig.indicators.macd, 4)}</div></div>
+          <div class="ind-item"><div class="ind-label">ADX 14</div><div class="ind-value">\${fmtNumber(sig.indicators.adx14, 2)}</div></div>
+          <div class="ind-item"><div class="ind-label">ATR 14</div><div class="ind-value">\${fmtNumber(sig.indicators.atr14, 4)}</div></div>
+          <div class="ind-item"><div class="ind-label">Momentum</div><div class="ind-value">\${fmtNumber(sig.indicators.momentum, 3)}%</div></div>
+          <div class="ind-item"><div class="ind-label">شکست قیمت</div><div class="ind-value" style="font-size:12px;">\${sig.indicators.breakout}</div></div>
+        </div>
+      </div>
+    \`;
+  }
+
+  function renderPairCard(sig) {
+    const color = SIGNAL_COLOR[sig.signal] || SIGNAL_COLOR.WAIT;
+    const label = SIGNAL_LABEL[sig.signal] || sig.signal;
+
+    return \`
+      <div class="pair-card" style="--signal-color:\${color}">
+        <div class="pair-top">
+          <span class="pair-symbol">\${sig.symbol}</span>
+          <span class="pair-signal">\${label}</span>
+        </div>
+        <div class="pair-price">\${fmtNumber(sig.price, 5)}</div>
+        <div class="pair-meta">
+          <span>امتیاز: <b>\${sig.score}</b></span>
+          <span>RSI: <b>\${fmtNumber(sig.indicators.rsi14, 1)}</b></span>
+          <span>\${sig.trend_1h}</span>
+        </div>
+      </div>
+    \`;
+  }
+
+  function render(data) {
+    const content = document.getElementById("content");
+    const signals = data.signals || [];
+    if (!signals.length) {
+      content.innerHTML = '<div class="state-box">سیگنالی دریافت نشد.</div>';
+      return;
+    }
+
+    const primary = signals.find(s => s.priority) || signals[0];
+    const others = signals.filter(s => s !== primary);
+
+    let html = renderHero(primary);
+    if (others.length) {
+      html += '<div class="section-label">سایر نمادها</div>';
+      html += '<div class="pairs-grid">' + others.map(renderPairCard).join("") + '</div>';
+    }
+    content.innerHTML = html;
+
+    document.getElementById("lastUpdate").textContent = fmtTime(data.timestamp);
+  }
+
+  function renderError(message) {
+    const content = document.getElementById("content");
+    content.innerHTML = \`
+      <div class="state-box error">
+        خطا در دریافت سیگنال‌ها: \${message}
+        <br>
+        <span class="retry" onclick="window.__fsRefresh()">تلاش دوباره</span>
+      </div>
+    \`;
+  }
+
+  function setStatus(state, text) {
+    const dot = document.getElementById("statusDot");
+    const label = document.getElementById("statusText");
+    dot.className = "dot" + (state === "live" ? " live" : state === "error" ? " error" : "");
+    label.textContent = text;
+  }
+
+  let countdownTimer = null;
+
+  function startCountdown() {
+    let remaining = Math.floor(REFRESH_MS / 1000);
+    const el = document.getElementById("refreshCountdown");
+    if (countdownTimer) clearInterval(countdownTimer);
+    countdownTimer = setInterval(() => {
+      remaining -= 1;
+      if (remaining <= 0) remaining = Math.floor(REFRESH_MS / 1000);
+      el.textContent = "رفرش خودکار: " + remaining + " ثانیه";
+    }, 1000);
+  }
+
+  async function fetchSignals() {
+    setStatus("", "در حال به‌روزرسانی...");
+    try {
+      const res = await fetch(API_PATH, { cache: "no-store" });
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      const data = await res.json();
+      if (!data.ok) throw new Error(data.error || "پاسخ نامعتبر");
+      render(data);
+      setStatus("live", "زنده — به‌روزرسانی شد");
+    } catch (err) {
+      setStatus("error", "خطا در اتصال");
+      renderError(err.message || String(err));
+    }
+  }
+
+  window.__fsRefresh = fetchSignals;
+
+  fetchSignals();
+  startCountdown();
+  setInterval(fetchSignals, REFRESH_MS);
+})();
+</script>
+</body>
+</html>
+`;
+
+// ============================================================
 // SECRET HELPERS
 // ============================================================
 
@@ -98,7 +622,11 @@ export default {
         return corsResponse("", 204);
       }
 
-      if (path === "/" || path === "/health") {
+      if (path === "/") {
+        return htmlResponse(DASHBOARD_HTML);
+      }
+
+      if (path === "/health") {
         const telegramToken = getTelegramToken(env);
         const telegramChatId = getTelegramChatId(env);
         const twelveKey = getTwelveDataKey(env);
@@ -1066,6 +1594,16 @@ function jsonResponse(data, status = 200) {
       "Access-Control-Allow-Origin": "*",
       "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
       "Access-Control-Allow-Headers": "Content-Type"
+    }
+  });
+}
+
+function htmlResponse(html, status = 200) {
+  return new Response(html, {
+    status,
+    headers: {
+      "Content-Type": "text/html; charset=UTF-8",
+      "Access-Control-Allow-Origin": "*"
     }
   });
 }
