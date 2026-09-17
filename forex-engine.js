@@ -2,20 +2,20 @@
 // FOREX SIGNAL ENGINE V5.5 GOLD PRIORITY
 // Cloudflare Worker + Twelve Data + Telegram
 //
-// PRIMARY FOCUS:
-// XAU/USD
+// PRIMARY FOCUS: XAU/USD
 //
 // TELEGRAM:
 // - Automatic GOLD signals
 // - /start
 // - /status
-// - Incoming message replies
-// - Secure webhook by configured Chat ID
+// - /telegram-test
+// - /telegram-set-webhook
+// - /telegram-webhook
 //
 // IMPORTANT:
-// - Telegram token remains in Cloudflare Secret
-// - Twelve Data key remains in Cloudflare Secret
-// - Telegram Chat ID remains in Cloudflare Variable
+// - TELEGRAM_BOT_TOKEN = Cloudflare Secret
+// - TWELVE_DATA_API_KEY = Cloudflare Secret
+// - TELEGRAM_CHAT_ID = Cloudflare Variable
 // - No profit guarantee
 // ============================================================
 
@@ -37,9 +37,7 @@ const CONFIG = {
 
   outputsize: 200,
 
-  // -----------------------------
   // GOLD FILTER
-  // -----------------------------
   goldMinScore: 70,
   strongScore: 85,
   eliteScore: 92,
@@ -49,36 +47,27 @@ const CONFIG = {
   minMomentum: 0.05,
   candleBodyMin: 0.35,
 
-  // -----------------------------
   // TRADE PLAN
-  // -----------------------------
   atrSLMultiplier: 0.70,
   tp1RiskReward: 1.50,
   tp2RiskReward: 2.50,
   tp3RiskReward: 3.50,
-
   limitATRMultiplier: 0.20,
 
-  // -----------------------------
   // TELEGRAM
-  // -----------------------------
   signalCooldownMinutes: 30,
 
-  // -----------------------------
-  // API CACHE
-  // -----------------------------
+  // CACHE
   goldCacheSeconds: 50,
   goldRefreshSeconds: 55,
   secondaryCacheSeconds: 300,
 
-  // -----------------------------
   // CLOSED CANDLE
-  // -----------------------------
   useClosedCandle: true
 };
 
 // ============================================================
-// SECRET HELPERS
+// ENV HELPERS
 // ============================================================
 
 function getTelegramToken(env) {
@@ -138,12 +127,8 @@ function nowMs() {
   return Date.now();
 }
 
-function normalizeSymbol(symbol) {
-  return String(symbol || "").trim().toUpperCase();
-}
-
 // ============================================================
-// CLOUDflare CACHE
+// CLOUDFLARE CACHE
 // ============================================================
 
 const CACHE = caches.default;
@@ -175,7 +160,7 @@ async function cachePut(key, data, seconds) {
       response
     );
   } catch {
-    // Cache failure must never stop the engine.
+    // Cache failure must never stop engine.
   }
 }
 
@@ -249,19 +234,18 @@ async function twelveDataTimeSeries(
 // ============================================================
 
 function parseCandles(data) {
-  const values = Array.isArray(data?.values)
-    ? data.values
-    : [];
+  const values =
+    Array.isArray(data?.values)
+      ? data.values
+      : [];
 
   const candles = values
     .map(v => ({
       datetime: v.datetime,
-
       open: Number(v.open),
       high: Number(v.high),
       low: Number(v.low),
       close: Number(v.close),
-
       volume:
         v.volume !== undefined
           ? Number(v.volume)
@@ -280,11 +264,13 @@ function parseCandles(data) {
 }
 
 // ============================================================
-// LOCAL INDICATORS
+// EMA
 // ============================================================
 
 function emaSeries(values, period) {
-  if (values.length < period) return [];
+  if (values.length < period) {
+    return [];
+  }
 
   const result = [];
 
@@ -294,7 +280,10 @@ function emaSeries(values, period) {
   let emaValue =
     values
       .slice(0, period)
-      .reduce((a, b) => a + b, 0) / period;
+      .reduce(
+        (a, b) => a + b,
+        0
+      ) / period;
 
   result.push(emaValue);
 
@@ -304,7 +293,8 @@ function emaSeries(values, period) {
     i++
   ) {
     emaValue =
-      ((values[i] - emaValue) * multiplier) +
+      ((values[i] - emaValue) *
+        multiplier) +
       emaValue;
 
     result.push(emaValue);
@@ -317,9 +307,13 @@ function ema(values, period) {
   const series =
     emaSeries(values, period);
 
-  if (!series.length) return null;
+  if (!series.length) {
+    return null;
+  }
 
-  return series[series.length - 1];
+  return series[
+    series.length - 1
+  ];
 }
 
 // ============================================================
@@ -327,16 +321,24 @@ function ema(values, period) {
 // ============================================================
 
 function rsi(values, period = 14) {
-  if (values.length < period + 1) {
+  if (
+    values.length <
+    period + 1
+  ) {
     return null;
   }
 
   let gain = 0;
   let loss = 0;
 
-  for (let i = 1; i <= period; i++) {
+  for (
+    let i = 1;
+    i <= period;
+    i++
+  ) {
     const diff =
-      values[i] - values[i - 1];
+      values[i] -
+      values[i - 1];
 
     if (diff >= 0) {
       gain += diff;
@@ -357,21 +359,28 @@ function rsi(values, period = 14) {
     i++
   ) {
     const diff =
-      values[i] - values[i - 1];
+      values[i] -
+      values[i - 1];
 
     const currentGain =
-      diff > 0 ? diff : 0;
+      diff > 0
+        ? diff
+        : 0;
 
     const currentLoss =
-      diff < 0 ? Math.abs(diff) : 0;
+      diff < 0
+        ? Math.abs(diff)
+        : 0;
 
     avgGain =
       ((avgGain * (period - 1)) +
-        currentGain) / period;
+        currentGain) /
+      period;
 
     avgLoss =
       ((avgLoss * (period - 1)) +
-        currentLoss) / period;
+        currentLoss) /
+      period;
   }
 
   if (avgLoss === 0) {
@@ -381,7 +390,10 @@ function rsi(values, period = 14) {
   const rs =
     avgGain / avgLoss;
 
-  return 100 - (100 / (1 + rs));
+  return (
+    100 -
+    (100 / (1 + rs))
+  );
 }
 
 // ============================================================
@@ -414,7 +426,8 @@ function macd(values) {
       i + (26 - 12);
 
     if (
-      ema12[ema12Index] !== undefined
+      ema12[ema12Index] !==
+      undefined
     ) {
       macdSeries.push(
         ema12[ema12Index] -
@@ -423,7 +436,9 @@ function macd(values) {
     }
   }
 
-  if (macdSeries.length < 9) {
+  if (
+    macdSeries.length < 9
+  ) {
     return {
       macd: null,
       signal: null,
@@ -432,7 +447,10 @@ function macd(values) {
   }
 
   const signalSeries =
-    emaSeries(macdSeries, 9);
+    emaSeries(
+      macdSeries,
+      9
+    );
 
   const macdValue =
     macdSeries[
@@ -448,7 +466,8 @@ function macd(values) {
     macd: macdValue,
     signal: signalValue,
     histogram:
-      macdValue - signalValue
+      macdValue -
+      signalValue
   };
 }
 
@@ -457,7 +476,10 @@ function macd(values) {
 // ============================================================
 
 function atr(candles, period = 14) {
-  if (candles.length < period + 1) {
+  if (
+    candles.length <
+    period + 1
+  ) {
     return null;
   }
 
@@ -476,7 +498,8 @@ function atr(candles, period = 14) {
 
     const tr =
       Math.max(
-        current.high - current.low,
+        current.high -
+          current.low,
 
         Math.abs(
           current.high -
@@ -499,8 +522,10 @@ function atr(candles, period = 14) {
   let value =
     trs
       .slice(0, period)
-      .reduce((a, b) => a + b, 0) /
-    period;
+      .reduce(
+        (a, b) => a + b,
+        0
+      ) / period;
 
   for (
     let i = period;
@@ -509,7 +534,8 @@ function atr(candles, period = 14) {
   ) {
     value =
       ((value * (period - 1)) +
-        trs[i]) / period;
+        trs[i]) /
+      period;
   }
 
   return value;
@@ -606,17 +632,26 @@ function adx(candles, period = 14) {
   let trSmooth =
     trs
       .slice(0, period)
-      .reduce((a, b) => a + b, 0);
+      .reduce(
+        (a, b) => a + b,
+        0
+      );
 
   let plusSmooth =
     plusDM
       .slice(0, period)
-      .reduce((a, b) => a + b, 0);
+      .reduce(
+        (a, b) => a + b,
+        0
+      );
 
   let minusSmooth =
     minusDM
       .slice(0, period)
-      .reduce((a, b) => a + b, 0);
+      .reduce(
+        (a, b) => a + b,
+        0
+      );
 
   const dxValues = [];
 
@@ -690,8 +725,10 @@ function adx(candles, period = 14) {
   let adxValue =
     dxValues
       .slice(0, period)
-      .reduce((a, b) => a + b, 0) /
-    period;
+      .reduce(
+        (a, b) => a + b,
+        0
+      ) / period;
 
   for (
     let i = period;
@@ -700,7 +737,8 @@ function adx(candles, period = 14) {
   ) {
     adxValue =
       ((adxValue * (period - 1)) +
-        dxValues[i]) / period;
+        dxValues[i]) /
+      period;
   }
 
   return {
@@ -725,7 +763,9 @@ function momentumPercent(
   }
 
   const current =
-    values[values.length - 1];
+    values[
+      values.length - 1
+    ];
 
   const previous =
     values[
@@ -760,7 +800,9 @@ function breakout(
   }
 
   const current =
-    candles[candles.length - 1];
+    candles[
+      candles.length - 1
+    ];
 
   const previous =
     candles.slice(
@@ -912,7 +954,7 @@ function getTrend(
 }
 
 // ============================================================
-// ANALYZE TIMEFRAME
+// TIMEFRAME ANALYSIS
 // ============================================================
 
 function analyzeTimeframe(candles) {
@@ -976,44 +1018,21 @@ function analyzeTimeframe(candles) {
 
   return {
     price: last.close,
-
     trend,
-
     rsi: rsiValue,
-
-    macd:
-      macdValue.macd,
-
-    macdSignal:
-      macdValue.signal,
-
+    macd: macdValue.macd,
+    macdSignal: macdValue.signal,
     macdHistogram:
       macdValue.histogram,
-
-    adx:
-      adxValue.adx,
-
-    plusDI:
-      adxValue.plusDI,
-
-    minusDI:
-      adxValue.minusDI,
-
-    atr:
-      atrValue,
-
+    adx: adxValue.adx,
+    plusDI: adxValue.plusDI,
+    minusDI: adxValue.minusDI,
+    atr: atrValue,
     momentum,
-
-    breakout:
-      breakoutValue,
-
+    breakout: breakoutValue,
     candle,
-
-    candleBodyRatio:
-      bodyRatio,
-
-    datetime:
-      last.datetime
+    candleBodyRatio: bodyRatio,
+    datetime: last.datetime
   };
 }
 
@@ -1036,8 +1055,7 @@ function analyzeGold(
     );
 
   const alignment =
-    tf15.trend ===
-    tf1h.trend
+    tf15.trend === tf1h.trend
       ? tf15.trend
       : "MIXED";
 
@@ -1045,12 +1063,7 @@ function analyzeGold(
 
   // 15M TREND
   if (
-    tf15.trend === "BULLISH"
-  ) {
-    score += 15;
-  }
-
-  if (
+    tf15.trend === "BULLISH" ||
     tf15.trend === "BEARISH"
   ) {
     score += 15;
@@ -1239,18 +1252,20 @@ function analyzeGold(
     tf15.candle ===
     "BEARISH";
 
-  // BUY
+  // BUY LIMIT
   const buySetup =
     tf15.trend === "BULLISH" &&
+    tf1h.trend === "BULLISH" &&
     macdBull &&
     diBull &&
     strong15m &&
     momentumBull &&
     candleBull;
 
-  // SELL
+  // SELL LIMIT
   const sellSetup =
     tf15.trend === "BEARISH" &&
+    tf1h.trend === "BEARISH" &&
     macdBear &&
     diBear &&
     strong15m &&
@@ -1458,41 +1473,92 @@ function buildTradePlan(
 }
 
 // ============================================================
-// TELEGRAM OUTGOING
+// TELEGRAM SEND
 // ============================================================
 
-function formatGoldTelegram(result) {
-  const plan =
-    result.tradePlan;
+async function sendTelegramToChat(
+  chatId,
+  text,
+  env
+) {
+  const token =
+    getTelegramToken(env);
 
-  if (!plan) {
-    return null;
+  if (!token) {
+    return {
+      ok: false,
+      error:
+        "TELEGRAM_BOT_TOKEN is missing"
+    };
   }
 
-  const isBuy =
-    result.signal ===
-    "BUY LIMIT";
+  if (!chatId) {
+    return {
+      ok: false,
+      error:
+        "Telegram chat_id is missing"
+    };
+  }
 
-  const icon =
-    isBuy ? "📈" : "📉";
+  const url =
+    `https://api.telegram.org/bot${token}/sendMessage`;
 
-  return (
-`💎 طلا (XAUUSD)
+  try {
+    const response =
+      await fetch(
+        url,
+        {
+          method: "POST",
 
-${icon} ${result.signal} | SCALP
+          headers: {
+            "content-type":
+              "application/json"
+          },
 
-نقطه ورود: ${plan.entry}
+          body:
+            JSON.stringify({
+              chat_id:
+                chatId,
 
-🛑 حد ضرر: ${plan.stopLoss}
+              text,
 
-🎯 تی پی اول: ${plan.tp1}
+              disable_web_page_preview:
+                true
+            })
+        }
+      );
 
-🎯 تی پی دوم: ${plan.tp2}
+    let data;
 
-💰 مدیریت سرمایه
+    try {
+      data =
+        await response.json();
+    } catch {
+      data = {
+        ok: false,
+        error:
+          "Invalid Telegram response"
+      };
+    }
 
-Hakim Gold Signals`
-  );
+    return {
+      ok:
+        response.ok &&
+        data.ok === true,
+
+      response:
+        data
+    };
+
+  } catch (error) {
+
+    return {
+      ok: false,
+      error:
+        error?.message ||
+        String(error)
+    };
+  }
 }
 
 async function sendTelegram(
@@ -1526,87 +1592,6 @@ async function sendTelegram(
     text,
     env
   );
-}
-
-async function sendTelegramToChat(
-  chatId,
-  text,
-  env
-) {
-  const token =
-    getTelegramToken(env);
-
-  if (!token) {
-    return {
-      ok: false,
-      error:
-        "TELEGRAM_BOT_TOKEN is missing"
-    };
-  }
-
-  if (!chatId) {
-    return {
-      ok: false,
-      error:
-        "Telegram chat_id is missing"
-    };
-  }
-
-  const url =
-    `https://api.telegram.org/bot${token}/sendMessage`;
-
-  try {
-    const response =
-      await fetch(url, {
-        method: "POST",
-
-        headers: {
-          "content-type":
-            "application/json"
-        },
-
-        body: JSON.stringify({
-          chat_id:
-            chatId,
-
-          text,
-
-          disable_web_page_preview:
-            true
-        })
-      });
-
-    let data;
-
-    try {
-      data =
-        await response.json();
-    } catch {
-      data = {
-        ok: false,
-        error:
-          "Invalid Telegram response"
-      };
-    }
-
-    return {
-      ok:
-        response.ok &&
-        data.ok === true,
-
-      response:
-        data
-    };
-
-  } catch (error) {
-
-    return {
-      ok: false,
-      error:
-        error?.message ||
-        String(error)
-    };
-  }
 }
 
 // ============================================================
@@ -1677,13 +1662,9 @@ async function telegramStatus(
       getTwelveDataKey(env)
     );
 
-  let lastSignal =
+  const lastSignal =
+    state?.signal ||
     "ندارد";
-
-  if (state?.signal) {
-    lastSignal =
-      state.signal;
-  }
 
   const text =
 `📊 وضعیت Hakim Gold Signals
@@ -1722,7 +1703,7 @@ ${CONFIG.signalCooldownMinutes} دقیقه
 }
 
 // ============================================================
-// TELEGRAM INCOMING WEBHOOK
+// TELEGRAM WEBHOOK
 // ============================================================
 
 async function handleTelegramWebhook(
@@ -1774,10 +1755,8 @@ async function handleTelegramWebhook(
       ""
     );
 
-  // -----------------------------------------
-  // SECURITY
+  // SECURITY:
   // Only configured Chat ID can control bot.
-  // -----------------------------------------
 
   if (
     !chatId ||
@@ -1798,49 +1777,39 @@ async function handleTelegramWebhook(
       .trim()
       .toLowerCase();
 
-  // -----------------------------------------
-  // /START
-  // -----------------------------------------
-
   if (
     text === "/start" ||
     text.startsWith("/start ")
   ) {
-    await telegramStart(
-      chatId,
-      env
-    );
+    const result =
+      await telegramStart(
+        chatId,
+        env
+      );
 
     return json({
-      ok: true,
-      command:
-        "/start"
+      ok: result.ok,
+      command: "/start",
+      telegram: result
     });
   }
-
-  // -----------------------------------------
-  // /STATUS
-  // -----------------------------------------
 
   if (
     text === "/status" ||
     text.startsWith("/status ")
   ) {
-    await telegramStatus(
-      chatId,
-      env
-    );
+    const result =
+      await telegramStatus(
+        chatId,
+        env
+      );
 
     return json({
-      ok: true,
-      command:
-        "/status"
+      ok: result.ok,
+      command: "/status",
+      telegram: result
     });
   }
-
-  // -----------------------------------------
-  // OTHER MESSAGES
-  // -----------------------------------------
 
   const reply =
 `🤖 Hakim Gold Signals
@@ -1854,21 +1823,22 @@ async function handleTelegramWebhook(
 
 💎 تمرکز اصلی: XAU/USD`;
 
-  await sendTelegramToChat(
-    chatId,
-    reply,
-    env
-  );
+  const result =
+    await sendTelegramToChat(
+      chatId,
+      reply,
+      env
+    );
 
   return json({
-    ok: true,
-    command:
-      "message"
+    ok: result.ok,
+    command: "message",
+    telegram: result
   });
 }
 
 // ============================================================
-// TELEGRAM WEBHOOK SETUP
+// SET TELEGRAM WEBHOOK
 // ============================================================
 
 async function setTelegramWebhook(
@@ -1898,24 +1868,41 @@ async function setTelegramWebhook(
     `https://api.telegram.org/bot${token}/setWebhook`;
 
   try {
-
     const response =
-      await fetch(url, {
-        method: "POST",
+      await fetch(
+        url,
+        {
+          method: "POST",
 
-        headers: {
-          "content-type":
-            "application/json"
-        },
+          headers: {
+            "content-type":
+              "application/json"
+          },
 
-        body: JSON.stringify({
-          url:
-            webhookUrl
-        })
-      });
+          body:
+            JSON.stringify({
+              url:
+                webhookUrl,
 
-    const data =
-      await response.json();
+              allowed_updates: [
+                "message"
+              ]
+            })
+        }
+      );
+
+    let data;
+
+    try {
+      data =
+        await response.json();
+    } catch {
+      data = {
+        ok: false,
+        error:
+          "Invalid Telegram API response"
+      };
+    }
 
     return json({
       ok:
@@ -1941,7 +1928,55 @@ async function setTelegramWebhook(
 }
 
 // ============================================================
-// SIGNAL COOLDOWN
+// TELEGRAM WEBHOOK INFO
+// ============================================================
+
+async function getTelegramWebhookInfo(
+  env
+) {
+  const token =
+    getTelegramToken(env);
+
+  if (!token) {
+    return {
+      ok: false,
+      error:
+        "TELEGRAM_BOT_TOKEN is missing"
+    };
+  }
+
+  const url =
+    `https://api.telegram.org/bot${token}/getWebhookInfo`;
+
+  try {
+    const response =
+      await fetch(url);
+
+    const data =
+      await response.json();
+
+    return {
+      ok:
+        response.ok &&
+        data.ok === true,
+
+      telegram:
+        data
+    };
+
+  } catch (error) {
+
+    return {
+      ok: false,
+      error:
+        error?.message ||
+        String(error)
+    };
+  }
+}
+
+// ============================================================
+// SIGNAL STATE
 // ============================================================
 
 const SIGNAL_STATE_KEY =
@@ -2007,7 +2042,7 @@ async function canSendSignal(
 }
 
 // ============================================================
-// GOLD DATA CACHE
+// GOLD CACHE
 // ============================================================
 
 function goldCacheKey(
@@ -2030,14 +2065,11 @@ async function getGoldCandles(
     );
 
   if (!force) {
-
     const cached =
       await cacheGet(key);
 
     if (cached) {
-
       try {
-
         const data =
           await cached.json();
 
@@ -2103,7 +2135,7 @@ async function getGoldCandles(
 }
 
 // ============================================================
-// PRIMARY GOLD ENGINE
+// GOLD ENGINE
 // ============================================================
 
 async function analyzeGoldEngine(
@@ -2157,6 +2189,61 @@ async function analyzeGoldEngine(
 }
 
 // ============================================================
+// TELEGRAM MESSAGE FORMAT
+// ============================================================
+
+function formatGoldTelegram(result) {
+  const plan =
+    result.tradePlan;
+
+  if (!plan) {
+    return null;
+  }
+
+  const isBuy =
+    result.signal ===
+    "BUY LIMIT";
+
+  const icon =
+    isBuy
+      ? "📈"
+      : "📉";
+
+  return (
+`💎 طلا (XAUUSD)
+
+${icon} ${result.signal} | SCALP
+
+قیمت فعلی: ${round(result.price, 2)}
+
+نقطه ورود: ${plan.entry}
+
+🛑 حد ضرر: ${plan.stopLoss}
+
+🎯 تی پی اول: ${plan.tp1}
+
+🎯 تی پی دوم: ${plan.tp2}
+
+🎯 تی پی سوم: ${plan.tp3}
+
+📊 امتیاز: ${result.score}/100
+
+📈 روند 15M: ${result.trend15m}
+
+⏱ روند 1H: ${result.trend1h}
+
+📊 RSI: ${round(result.rsi, 2)}
+
+📊 ADX: ${round(result.adx, 2)}
+
+⚠️ سیگنال تضمین سود نیست.
+مدیریت سرمایه و ریسک بر عهده معامله‌گر است.
+
+Hakim Gold Signals`
+  );
+}
+
+// ============================================================
 // RUN ENGINE
 // ============================================================
 
@@ -2184,25 +2271,17 @@ async function runEngine(
 
     stats: {
       runs: 1,
-
       signals: 0,
-
       telegramSent: 0,
-
       telegramFailed: 0,
-
       lastRun:
         generatedAt,
-
       lastSignal:
         null
     }
   };
 
   try {
-
-    // GOLD FIRST
-
     const gold =
       await analyzeGoldEngine(
         env,
@@ -2215,15 +2294,12 @@ async function runEngine(
       gold
     );
 
-    // SEND TELEGRAM
-
     if (
       gold.signal ===
         "BUY LIMIT" ||
       gold.signal ===
         "SELL LIMIT"
     ) {
-
       result.stats.signals =
         1;
 
@@ -2236,7 +2312,6 @@ async function runEngine(
         );
 
       if (allowed) {
-
         const message =
           formatGoldTelegram(
             gold
@@ -2251,7 +2326,6 @@ async function runEngine(
         if (
           telegram.ok
         ) {
-
           result.stats.telegramSent =
             1;
 
@@ -2267,7 +2341,6 @@ async function runEngine(
           });
 
         } else {
-
           result.stats.telegramFailed =
             1;
 
@@ -2277,19 +2350,15 @@ async function runEngine(
         }
 
       } else {
-
         result.telegram =
           "COOLDOWN";
       }
     }
 
-    // SECONDARY SYMBOLS
-
     for (
       const symbol of
       CONFIG.symbols
     ) {
-
       if (
         symbol ===
         CONFIG.primarySymbol
@@ -2324,7 +2393,6 @@ async function runEngine(
     if (
       !result.results.length
     ) {
-
       result.results.push({
         symbol:
           CONFIG.primarySymbol,
@@ -2354,7 +2422,12 @@ async function telegramTest(
 Telegram connection test
 
 FOREX SIGNAL ENGINE V5.5
-Gold Priority`;
+Gold Priority
+
+XAU/USD
+15M + 1H
+
+Telegram connection is working.`;
 
   return await sendTelegram(
     text,
@@ -2408,6 +2481,15 @@ function health(env) {
 
     webhookPath:
       "/telegram-webhook",
+
+    webhookSetupPath:
+      "/telegram-set-webhook",
+
+    webhookInfoPath:
+      "/telegram-webhook-info",
+
+    telegramTestPath:
+      "/telegram-test",
 
     commands: [
       "/start",
@@ -2477,42 +2559,37 @@ export default {
       url.pathname;
 
     // HOME
-
     if (
       path === "/" ||
       path === ""
     ) {
-
       return new Response(
         dashboardHTML(),
         {
           headers: {
             "content-type":
-              "text/html; charset=UTF-8"
+              "text/html; charset=UTF-8",
+            "cache-control":
+              "no-store"
           }
         }
       );
     }
 
     // HEALTH
-
     if (
       path === "/health"
     ) {
-
       return json(
         health(env)
       );
     }
 
     // API SIGNALS
-
     if (
       path === "/api/signals"
     ) {
-
       try {
-
         const result =
           await analyzeGoldEngine(
             env,
@@ -2585,58 +2662,28 @@ export default {
     }
 
     // RUN
-
     if (
       path === "/run"
     ) {
-
-      const result =
-        await runEngine(
-          env
-        );
-
       return json(
-        result
+        await runEngine(env)
       );
     }
 
     // TELEGRAM TEST
-
     if (
       path === "/telegram-test"
     ) {
-
-      const result =
-        await telegramTest(
-          env
-        );
-
       return json(
-        result
+        await telegramTest(env)
       );
     }
 
-    // TELEGRAM WEBHOOK
-
-    if (
-      path ===
-      "/telegram-webhook"
-    ) {
-
-      return await
-        handleTelegramWebhook(
-          request,
-          env
-        );
-    }
-
-    // SET TELEGRAM WEBHOOK
-
+    // TELEGRAM SET WEBHOOK
     if (
       path ===
       "/telegram-set-webhook"
     ) {
-
       return await
         setTelegramWebhook(
           request,
@@ -2644,22 +2691,56 @@ export default {
         );
     }
 
-    // STATS
+    // TELEGRAM WEBHOOK INFO
+    if (
+      path ===
+      "/telegram-webhook-info"
+    ) {
+      return json(
+        await getTelegramWebhookInfo(
+          env
+        )
+      );
+    }
 
+    // TELEGRAM INCOMING WEBHOOK
+    if (
+      path ===
+      "/telegram-webhook"
+    ) {
+      return await
+        handleTelegramWebhook(
+          request,
+          env
+        );
+    }
+
+    // STATS
     if (
       path === "/api/stats"
     ) {
-
       return json(
         await stats()
       );
     }
 
     // NOT FOUND
-
     return json({
+      ok: false,
       error:
-        "مسیر یافت نشد"
+        "مسیر یافت نشد",
+      path,
+      availableRoutes: [
+        "/",
+        "/health",
+        "/api/signals",
+        "/api/stats",
+        "/run",
+        "/telegram-test",
+        "/telegram-set-webhook",
+        "/telegram-webhook-info",
+        "/telegram-webhook"
+      ]
     }, 404);
   },
 
@@ -2672,7 +2753,6 @@ export default {
     env,
     ctx
   ) {
-
     ctx.waitUntil(
       runEngine(env)
     );
@@ -2684,7 +2764,6 @@ export default {
 // ============================================================
 
 function dashboardHTML() {
-
   return `<!doctype html>
 
 <html lang="fa" dir="rtl">
@@ -2708,46 +2787,39 @@ content="width=device-width,initial-scale=1">
 
 body {
   margin: 0;
-
   font-family:
     Arial,
     Tahoma,
     sans-serif;
-
   background:
     #0b1020;
-
   color:
     #f4f6fb;
 }
 
 .container {
   max-width: 900px;
-
   margin: auto;
-
   padding: 18px;
 }
 
 .header {
   padding: 20px;
-
   border-radius: 18px;
-
   background:
     linear-gradient(
       135deg,
       #141b35,
       #0f172a
     );
-
   margin-bottom: 16px;
 }
 
 h1 {
-  margin: 0 0 8px;
-
-  font-size: 22px;
+  margin:
+    0 0 8px;
+  font-size:
+    22px;
 }
 
 .subtitle {
@@ -2758,13 +2830,12 @@ h1 {
 .card {
   background:
     #121a2d;
-
-  border-radius: 18px;
-
-  padding: 18px;
-
-  margin-bottom: 14px;
-
+  border-radius:
+    18px;
+  padding:
+    18px;
+  margin-bottom:
+    14px;
   border:
     1px solid #26314a;
 }
@@ -2775,92 +2846,93 @@ h1 {
 }
 
 .symbol {
-  font-size: 20px;
-
-  font-weight: bold;
+  font-size:
+    20px;
+  font-weight:
+    bold;
 }
 
 .price {
-  font-size: 30px;
-
-  margin: 12px 0;
+  font-size:
+    30px;
+  margin:
+    12px 0;
 }
 
 .signal {
-  display: inline-block;
-
-  padding: 8px 14px;
-
-  border-radius: 12px;
-
+  display:
+    inline-block;
+  padding:
+    8px 14px;
+  border-radius:
+    12px;
   background:
     #26314a;
-
-  font-weight: bold;
+  font-weight:
+    bold;
 }
 
 .grid {
-  display: grid;
-
+  display:
+    grid;
   grid-template-columns:
     repeat(2, 1fr);
-
-  gap: 10px;
-
-  margin-top: 14px;
+  gap:
+    10px;
+  margin-top:
+    14px;
 }
 
 .metric {
   background:
     #0d1425;
-
-  border-radius: 12px;
-
-  padding: 10px;
+  border-radius:
+    12px;
+  padding:
+    10px;
 }
 
 .label {
   color:
     #8f9bb3;
-
-  font-size: 12px;
+  font-size:
+    12px;
 }
 
 .value {
-  font-size: 16px;
-
-  margin-top: 5px;
+  font-size:
+    16px;
+  margin-top:
+    5px;
 }
 
 .plan {
-  margin-top: 15px;
-
-  padding: 14px;
-
+  margin-top:
+    15px;
+  padding:
+    14px;
   background:
     #0d1425;
-
-  border-radius: 14px;
+  border-radius:
+    14px;
 }
 
 .footer {
-  text-align: center;
-
+  text-align:
+    center;
   color:
     #75819a;
-
-  margin-top: 18px;
-
-  font-size: 12px;
+  margin-top:
+    18px;
+  font-size:
+    12px;
 }
 
 @media(max-width:600px) {
-
   .grid {
     grid-template-columns:
       1fr 1fr;
   }
-
 }
 
 </style>
@@ -2891,6 +2963,8 @@ Gold Priority · XAU/USD · 15M + 1H
 رفرش خودکار هر 30 ثانیه
 <br>
 تمرکز اصلی: XAU/USD
+<br><br>
+سیگنال‌ها تضمین سود نیستند.
 </div>
 
 </div>
@@ -2901,7 +2975,6 @@ function value(
   v,
   decimals = 2
 ) {
-
   if (
     v === null ||
     v === undefined ||
@@ -2909,7 +2982,6 @@ function value(
       Number(v)
     )
   ) {
-
     return "-";
   }
 
@@ -2921,18 +2993,14 @@ function metric(
   label,
   val
 ) {
-
   return \`
     <div class="metric">
-
       <div class="label">
         \${label}
       </div>
-
       <div class="value">
         \${val}
       </div>
-
     </div>
   \`;
 }
@@ -2945,34 +3013,40 @@ function renderGold(r) {
   let planHTML = "";
 
   if (plan) {
-
     planHTML = \`
       <div class="plan">
-
         <b>
           برنامه معامله
         </b>
 
-        \${metric(
-          "نقطه ورود",
-          value(plan.entry)
-        )}
+        <div class="grid">
 
-        \${metric(
-          "حد ضرر",
-          value(plan.stopLoss)
-        )}
+          \${metric(
+            "نقطه ورود",
+            value(plan.entry)
+          )}
 
-        \${metric(
-          "TP1",
-          value(plan.tp1)
-        )}
+          \${metric(
+            "حد ضرر",
+            value(plan.stopLoss)
+          )}
 
-        \${metric(
-          "TP2",
-          value(plan.tp2)
-        )}
+          \${metric(
+            "TP1",
+            value(plan.tp1)
+          )}
 
+          \${metric(
+            "TP2",
+            value(plan.tp2)
+          )}
+
+          \${metric(
+            "TP3",
+            value(plan.tp3)
+          )}
+
+        </div>
       </div>
     \`;
   }
@@ -3114,7 +3188,6 @@ async function load() {
       !data.results ||
       !data.results.length
     ) {
-
       throw new Error(
         "No results"
       );
@@ -3137,7 +3210,6 @@ async function load() {
     let html = "";
 
     if (gold) {
-
       html +=
         renderGold(gold);
     }
@@ -3145,7 +3217,6 @@ async function load() {
     for (
       const r of secondary
     ) {
-
       html +=
         renderSecondary(r);
     }
@@ -3193,4 +3264,4 @@ setInterval(
 </body>
 
 </html>`;
-    }
+}
