@@ -1,33 +1,12 @@
 // ============================================================
-// FOREX SIGNAL ENGINE V5.4 GOLD PRO
+// FOREX SIGNAL ENGINE V5.4 GOLD FOCUS
 // Cloudflare Worker + Twelve Data + Telegram
-// PRIMARY FOCUS: XAU/USD
-//
-// FEATURES
-// - XAU/USD primary focus
-// - 15m + 1h confirmation
-// - EMA 20 / 50 / 200
-// - MACD
-// - RSI
-// - ADX / DI
-// - ATR
-// - Momentum
-// - Breakout
-// - Closed candle confirmation
-// - Strict BUY / SELL filtering
-// - BUY LIMIT / SELL LIMIT guidance
-// - ATR based SL / TP1 / TP2 / TP3
-// - Telegram alerts
-// - Telegram test endpoint
-// - Manual /run endpoint
-// - API endpoints
-// - 30 minute signal cooldown
-// - No guaranteed-profit claims
+// PRIMARY: XAU/USD
 // ============================================================
 
 const CONFIG = {
   version: "V5.4",
-  name: "Gold Pro",
+  name: "Gold Focus",
 
   symbols: [
     "XAU/USD",
@@ -44,74 +23,69 @@ const CONFIG = {
   outputsize15m: 250,
   outputsize1h: 250,
 
-  // Strict signal filters
-  minScore: 85,
-  strongScore: 92,
-  eliteScore: 96,
+  // GOLD FILTER
+  goldMinScore: 70,
+  normalMinScore: 85,
 
-  minADX: 25,
-  minDISpread: 8,
-  minMomentum: 0.15,
+  strongScore: 85,
+  eliteScore: 92,
+
+  minADX: 22,
+  minDISpread: 5,
+  minMomentum: 0.05,
 
   breakoutLookback: 20,
-  candleBodyMin: 0.50,
 
-  // Risk / trade-plan calculations
+  candleBodyMin: 0.35,
+
   atrSLMultiplier: 0.70,
+
   tp1RiskReward: 1.50,
   tp2RiskReward: 2.50,
   tp3RiskReward: 3.50,
 
-  // Pending limit distance
-  limitATRMultiplier: 0.25,
+  limitATRMultiplier: 0.20,
 
-  // Prevent repeated signals
   signalCooldownMinutes: 30,
 
-  // Use completed candle
-  useClosedCandle: true,
-
-  timezone: "UTC"
+  useClosedCandle: true
 };
 
 // ============================================================
-// RUNTIME STATE
+// RUNTIME
 // ============================================================
 
-const signalCooldown = new Map();
+const cooldowns = new Map();
 
-let runtimeStats = {
+const STATS = {
   runs: 0,
   signals: 0,
   telegramSent: 0,
   telegramFailed: 0,
   lastRun: null,
-  lastSignal: null,
-  lastTelegram: null
+  lastSignal: null
 };
 
 // ============================================================
-// ENVIRONMENT HELPERS
+// ENV
 // ============================================================
 
-function getEnvValue(env, names) {
+function envValue(env, names) {
   for (const name of names) {
-    const value = env?.[name];
-
     if (
-      value !== undefined &&
-      value !== null &&
-      String(value).trim() !== ""
+      env[name] !== undefined &&
+      env[name] !== null &&
+      String(env[name]).trim() !== ""
     ) {
-      return String(value).trim();
+      return String(env[name]).trim();
     }
   }
 
   return null;
 }
 
-function getTwelveDataKey(env) {
-  return getEnvValue(env, [
+function twelveKey(env) {
+  return envValue(env, [
     "TWELVE_DATA_API_KEY",
     "کلید API دوازده داده",
     "کلید_API_دوازده_داده",
@@ -119,16 +93,16 @@ function getTwelveDataKey(env) {
   ]);
 }
 
-function getTelegramToken(env) {
-  return getEnvValue(env, [
+function telegramToken(env) {
+  return envValue(env, [
     "TELEGRAM_BOT_TOKEN",
     "توکن_ربات_تلگرام",
     "توکن ربات تلگرام"
   ]);
 }
 
-function getTelegramChatId(env) {
-  return getEnvValue(env, [
+function telegramChatId(env) {
+  return envValue(env, [
     "TELEGRAM_CHAT_ID",
     "شناسه_چت_تلگرام",
     "آیدی_چت_تلگرام",
@@ -137,16 +111,17 @@ function getTelegramChatId(env) {
 }
 
 // ============================================================
-// RESPONSE HELPERS
+// RESPONSE
 // ============================================================
 
-function jsonResponse(data, status = 200) {
+function json(data, status = 200) {
   return new Response(
     JSON.stringify(data, null, 2),
     {
       status,
       headers: {
-        "content-type": "application/json; charset=utf-8",
+        "content-type":
+          "application/json; charset=utf-8",
         "cache-control": "no-store",
         "access-control-allow-origin": "*"
       }
@@ -154,107 +129,110 @@ function jsonResponse(data, status = 200) {
   );
 }
 
-function htmlResponse(html, status = 200) {
-  return new Response(html, {
-    status,
+function html(data) {
+  return new Response(data, {
     headers: {
-      "content-type": "text/html; charset=utf-8",
+      "content-type":
+        "text/html; charset=utf-8",
       "cache-control": "no-store"
     }
   });
 }
 
-function round(value, decimals = 2) {
-  const n = Number(value);
+function round(n, decimals = 2) {
+  const x = Number(n);
 
-  if (!Number.isFinite(n)) {
+  if (!Number.isFinite(x)) {
     return null;
   }
 
-  return Number(n.toFixed(decimals));
-}
-
-function safeNumber(value, fallback = 0) {
-  const n = Number(value);
-
-  return Number.isFinite(n) ? n : fallback;
-}
-
-function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
+  return Number(x.toFixed(decimals));
 }
 
 // ============================================================
 // TWELVE DATA
 // ============================================================
 
-async function fetchTimeSeries(
+async function getCandles(
   env,
   symbol,
   interval,
   outputsize
 ) {
-  const apiKey = getTwelveDataKey(env);
+  const key = twelveKey(env);
 
-  if (!apiKey) {
-    throw new Error("Twelve Data API key is missing");
+  if (!key) {
+    throw new Error(
+      "TWELVE_DATA_API_KEY is missing"
+    );
   }
 
   const url = new URL(
     "https://api.twelvedata.com/time_series"
   );
 
-  url.searchParams.set("symbol", symbol);
-  url.searchParams.set("interval", interval);
-  url.searchParams.set("outputsize", String(outputsize));
-  url.searchParams.set("format", "JSON");
-  url.searchParams.set("apikey", apiKey);
+  url.searchParams.set(
+    "symbol",
+    symbol
+  );
 
-  const response = await fetch(url.toString(), {
-    method: "GET",
-    headers: {
-      "accept": "application/json"
-    }
-  });
+  url.searchParams.set(
+    "interval",
+    interval
+  );
 
-  if (!response.ok) {
-    throw new Error(
-      `Twelve Data HTTP ${response.status}`
-    );
-  }
+  url.searchParams.set(
+    "outputsize",
+    String(outputsize)
+  );
 
-  const data = await response.json();
+  url.searchParams.set(
+    "format",
+    "JSON"
+  );
+
+  url.searchParams.set(
+    "apikey",
+    key
+  );
+
+  const response =
+    await fetch(url.toString());
+
+  const data =
+    await response.json();
 
   if (
+    !response.ok ||
     data.status === "error" ||
-    data.code ||
     !Array.isArray(data.values)
   ) {
     throw new Error(
       data.message ||
-      "Invalid Twelve Data response"
+      `Twelve Data error ${response.status}`
     );
   }
 
-  const candles = data.values
-    .map(item => ({
-      datetime: item.datetime,
-      open: Number(item.open),
-      high: Number(item.high),
-      low: Number(item.low),
-      close: Number(item.close),
-      volume:
-        item.volume !== undefined
-          ? Number(item.volume)
-          : null
-    }))
-    .filter(item =>
-      Number.isFinite(item.open) &&
-      Number.isFinite(item.high) &&
-      Number.isFinite(item.low) &&
-      Number.isFinite(item.close)
-    )
-    .reverse();
+  const candles =
+    data.values
+      .map(x => ({
+        datetime: x.datetime,
+        open: Number(x.open),
+        high: Number(x.high),
+        low: Number(x.low),
+        close: Number(x.close),
+        volume:
+          x.volume !== undefined
+            ? Number(x.volume)
+            : null
+      }))
+      .filter(x =>
+        Number.isFinite(x.open) &&
+        Number.isFinite(x.high) &&
+        Number.isFinite(x.low) &&
+        Number.isFinite(x.close)
+      )
+      .reverse();
 
   if (candles.length < 50) {
     throw new Error(
@@ -262,53 +240,46 @@ async function fetchTimeSeries(
     );
   }
 
+  if (
+    CONFIG.useClosedCandle &&
+    candles.length > 2
+  ) {
+    return candles.slice(0, -1);
+  }
+
   return candles;
-}
-
-// ============================================================
-// DATA NORMALIZATION
-// ============================================================
-
-function getClosedCandles(candles) {
-  if (!CONFIG.useClosedCandle) {
-    return candles;
-  }
-
-  if (candles.length <= 2) {
-    return candles;
-  }
-
-  // Twelve Data usually returns completed candles.
-  // Remove the newest candle to avoid using a possibly open candle.
-  return candles.slice(0, -1);
 }
 
 // ============================================================
 // EMA
 // ============================================================
 
-function ema(values, period) {
-  if (!Array.isArray(values) || values.length < period) {
+function EMA(values, period) {
+  if (values.length < period) {
     return [];
   }
 
-  const result = [];
+  const multiplier =
+    2 / (period + 1);
 
-  const multiplier = 2 / (period + 1);
-
-  let sum = 0;
+  let previous = 0;
 
   for (let i = 0; i < period; i++) {
-    sum += values[i];
+    previous += values[i];
   }
 
-  let previous = sum / period;
+  previous /= period;
 
-  result.push(previous);
+  const result = [previous];
 
-  for (let i = period; i < values.length; i++) {
+  for (
+    let i = period;
+    i < values.length;
+    i++
+  ) {
     previous =
-      (values[i] - previous) * multiplier +
+      ((values[i] - previous) *
+        multiplier) +
       previous;
 
     result.push(previous);
@@ -317,11 +288,11 @@ function ema(values, period) {
   return result;
 }
 
-function latestEMA(values, period) {
-  const result = ema(values, period);
+function lastEMA(values, period) {
+  const x = EMA(values, period);
 
-  return result.length
-    ? result[result.length - 1]
+  return x.length
+    ? x[x.length - 1]
     : null;
 }
 
@@ -329,74 +300,77 @@ function latestEMA(values, period) {
 // RSI
 // ============================================================
 
-function rsi(values, period = 14) {
+function RSI(values, period = 14) {
   if (values.length <= period) {
     return [];
   }
 
-  let gains = 0;
-  let losses = 0;
-
-  for (let i = 1; i <= period; i++) {
-    const change =
-      values[i] - values[i - 1];
-
-    if (change >= 0) {
-      gains += change;
-    } else {
-      losses += Math.abs(change);
-    }
-  }
-
-  let averageGain = gains / period;
-  let averageLoss = losses / period;
-
-  const result = [];
-
-  let rs =
-    averageLoss === 0
-      ? Infinity
-      : averageGain / averageLoss;
-
-  result.push(
-    averageLoss === 0
-      ? 100
-      : 100 - 100 / (1 + rs)
-  );
+  let gain = 0;
+  let loss = 0;
 
   for (
-    let i = period + 1;
-    i < values.length;
+    let i = 1;
+    i <= period;
     i++
   ) {
     const change =
       values[i] - values[i - 1];
 
-    const gain =
-      change > 0 ? change : 0;
+    if (change >= 0) {
+      gain += change;
+    } else {
+      loss += Math.abs(change);
+    }
+  }
 
-    const loss =
-      change < 0 ? Math.abs(change) : 0;
+  let avgGain =
+    gain / period;
 
-    averageGain =
-      ((averageGain * (period - 1)) + gain) /
-      period;
+  let avgLoss =
+    loss / period;
 
-    averageLoss =
-      ((averageLoss * (period - 1)) + loss) /
-      period;
+  const result = [];
 
-    rs =
-      averageLoss === 0
-        ? Infinity
-        : averageGain / averageLoss;
+  for (
+    let i = period;
+    i < values.length;
+    i++
+  ) {
+    if (i > period) {
+      const change =
+        values[i] -
+        values[i - 1];
 
-    const current =
-      averageLoss === 0
-        ? 100
-        : 100 - 100 / (1 + rs);
+      const g =
+        change > 0
+          ? change
+          : 0;
 
-    result.push(current);
+      const l =
+        change < 0
+          ? Math.abs(change)
+          : 0;
+
+      avgGain =
+        ((avgGain * (period - 1)) + g) /
+        period;
+
+      avgLoss =
+        ((avgLoss * (period - 1)) + l) /
+        period;
+    }
+
+    if (avgLoss === 0) {
+      result.push(100);
+    } else {
+      const rs =
+        avgGain / avgLoss;
+
+      result.push(
+        100 -
+        100 / (1 + rs)
+      );
+    }
   }
 
   return result;
@@ -406,13 +380,19 @@ function rsi(values, period = 14) {
 // MACD
 // ============================================================
 
-function macd(
+function MACD(
   values,
-  fastPeriod = 12,
-  slowPeriod = 26,
+  fast = 12,
+  slow = 26,
   signalPeriod = 9
 ) {
-  if (values.length < slowPeriod + signalPeriod) {
+  const fastEMA =
+    EMA(values, fast);
+
+  const slowEMA =
+    EMA(values, slow);
+
+  if (!slowEMA.length) {
     return {
       macd: null,
       signal: null,
@@ -420,30 +400,29 @@ function macd(
     };
   }
 
-  const fast = ema(values, fastPeriod);
-  const slow = ema(values, slowPeriod);
-
   const offset =
-    slowPeriod - fastPeriod;
+    slow - fast;
 
-  const macdLine = [];
+  const line = [];
 
-  for (let i = 0; i < slow.length; i++) {
-    const fastValue =
-      fast[i + offset];
-
-    const slowValue =
-      slow[i];
-
-    macdLine.push(
-      fastValue - slowValue
+  for (
+    let i = 0;
+    i < slowEMA.length;
+    i++
+  ) {
+    line.push(
+      fastEMA[i + offset] -
+      slowEMA[i]
     );
   }
 
-  const signalLine =
-    ema(macdLine, signalPeriod);
+  const signal =
+    EMA(
+      line,
+      signalPeriod
+    );
 
-  if (!signalLine.length) {
+  if (!signal.length) {
     return {
       macd: null,
       signal: null,
@@ -451,17 +430,16 @@ function macd(
     };
   }
 
-  const latestMacd =
-    macdLine[macdLine.length - 1];
+  const m =
+    line[line.length - 1];
 
-  const latestSignal =
-    signalLine[signalLine.length - 1];
+  const s =
+    signal[signal.length - 1];
 
   return {
-    macd: latestMacd,
-    signal: latestSignal,
-    histogram:
-      latestMacd - latestSignal
+    macd: m,
+    signal: s,
+    histogram: m - s
   };
 }
 
@@ -469,74 +447,69 @@ function macd(
 // ATR
 // ============================================================
 
-function atr(candles, period = 14) {
+function ATR(candles, period = 14) {
   if (candles.length <= period) {
-    return [];
+    return null;
   }
 
   const tr = [];
 
-  for (let i = 1; i < candles.length; i++) {
-    const current = candles[i];
-    const previous = candles[i - 1];
-
-    const range1 =
-      current.high - current.low;
-
-    const range2 =
-      Math.abs(
-        current.high - previous.close
-      );
-
-    const range3 =
-      Math.abs(
-        current.low - previous.close
-      );
+  for (
+    let i = 1;
+    i < candles.length;
+    i++
+  ) {
+    const c = candles[i];
+    const p = candles[i - 1];
 
     tr.push(
       Math.max(
-        range1,
-        range2,
-        range3
+        c.high - c.low,
+        Math.abs(
+          c.high - p.close
+        ),
+        Math.abs(
+          c.low - p.close
+        )
       )
     );
   }
 
-  if (tr.length < period) {
-    return [];
+  let value = 0;
+
+  for (
+    let i = 0;
+    i < period;
+    i++
+  ) {
+    value += tr[i];
   }
 
-  let currentATR = 0;
-
-  for (let i = 0; i < period; i++) {
-    currentATR += tr[i];
-  }
-
-  currentATR /= period;
-
-  const result = [currentATR];
+  value /= period;
 
   for (
     let i = period;
     i < tr.length;
     i++
   ) {
-    currentATR =
-      ((currentATR * (period - 1)) + tr[i]) /
+    value =
+      ((value * (period - 1)) +
+        tr[i]) /
       period;
-
-    result.push(currentATR);
   }
 
-  return result;
+  return value;
 }
 
 // ============================================================
 // ADX / DI
 // ============================================================
 
-function adx(candles, period = 14) {
-  if (candles.length <= period * 2) {
+function ADX(candles, period = 14) {
+  if (
+    candles.length <
+    period * 2 + 5
+  ) {
     return {
       adx: null,
       plusDI: null,
@@ -548,123 +521,115 @@ function adx(candles, period = 14) {
   const plusDM = [];
   const minusDM = [];
 
-  for (let i = 1; i < candles.length; i++) {
-    const current = candles[i];
-    const previous = candles[i - 1];
+  for (
+    let i = 1;
+    i < candles.length;
+    i++
+  ) {
+    const c = candles[i];
+    const p = candles[i - 1];
 
-    const upMove =
-      current.high - previous.high;
+    const up =
+      c.high - p.high;
 
-    const downMove =
-      previous.low - current.low;
+    const down =
+      p.low - c.low;
 
-    const trueRange = Math.max(
-      current.high - current.low,
-      Math.abs(
-        current.high - previous.close
-      ),
-      Math.abs(
-        current.low - previous.close
+    tr.push(
+      Math.max(
+        c.high - c.low,
+        Math.abs(
+          c.high - p.close
+        ),
+        Math.abs(
+          c.low - p.close
+        )
       )
     );
 
-    tr.push(trueRange);
-
     plusDM.push(
-      upMove > downMove && upMove > 0
-        ? upMove
+      up > down && up > 0
+        ? up
         : 0
     );
 
     minusDM.push(
-      downMove > upMove && downMove > 0
-        ? downMove
+      down > up && down > 0
+        ? down
         : 0
     );
   }
 
-  if (tr.length < period * 2) {
-    return {
-      adx: null,
-      plusDI: null,
-      minusDI: null
-    };
-  }
+  function smooth(values) {
+    let v = 0;
 
-  function wilderAverage(values) {
-    const output = [];
-
-    let current = 0;
-
-    for (let i = 0; i < period; i++) {
-      current += values[i];
+    for (
+      let i = 0;
+      i < period;
+      i++
+    ) {
+      v += values[i];
     }
 
-    current /= period;
-    output.push(current);
+    v /= period;
+
+    const result = [v];
 
     for (
       let i = period;
       i < values.length;
       i++
     ) {
-      current =
-        ((current * (period - 1)) + values[i]) /
+      v =
+        ((v * (period - 1)) +
+          values[i]) /
         period;
 
-      output.push(current);
+      result.push(v);
     }
 
-    return output;
+    return result;
   }
 
-  const smoothedTR =
-    wilderAverage(tr);
-
-  const smoothedPlusDM =
-    wilderAverage(plusDM);
-
-  const smoothedMinusDM =
-    wilderAverage(minusDM);
+  const sTR = smooth(tr);
+  const sPlus = smooth(plusDM);
+  const sMinus = smooth(minusDM);
 
   const dx = [];
-  const plusValues = [];
-  const minusValues = [];
+  const plus = [];
+  const minus = [];
 
-  const length = Math.min(
-    smoothedTR.length,
-    smoothedPlusDM.length,
-    smoothedMinusDM.length
-  );
-
-  for (let i = 0; i < length; i++) {
-    const trValue =
-      smoothedTR[i];
-
-    const plus =
-      trValue === 0
+  for (
+    let i = 0;
+    i < sTR.length;
+    i++
+  ) {
+    const p =
+      sTR[i] === 0
         ? 0
         : 100 *
-          (smoothedPlusDM[i] / trValue);
+          sPlus[i] /
+          sTR[i];
 
-    const minus =
-      trValue === 0
+    const m =
+      sTR[i] === 0
         ? 0
         : 100 *
-          (smoothedMinusDM[i] / trValue);
+          sMinus[i] /
+          sTR[i];
 
-    const sum = plus + minus;
+    plus.push(p);
+    minus.push(m);
 
-    const currentDX =
+    const sum = p + m;
+
+    dx.push(
       sum === 0
         ? 0
         : 100 *
-          Math.abs(plus - minus) /
-          sum;
-
-    plusValues.push(plus);
-    minusValues.push(minus);
-    dx.push(currentDX);
+          Math.abs(p - m) /
+          sum
+    );
   }
 
   if (dx.length < period) {
@@ -676,23 +641,23 @@ function adx(candles, period = 14) {
   }
 
   const adxValues =
-    wilderAverage(dx);
+    smooth(dx);
 
   return {
     adx:
-      adxValues.length
-        ? adxValues[adxValues.length - 1]
-        : null,
+      adxValues[
+        adxValues.length - 1
+      ],
 
     plusDI:
-      plusValues.length
-        ? plusValues[plusValues.length - 1]
-        : null,
+      plus[
+        plus.length - 1
+      ],
 
     minusDI:
-      minusValues.length
-        ? minusValues[minusValues.length - 1]
-        : null
+      minus[
+        minus.length - 1
+      ]
   };
 }
 
@@ -700,30 +665,33 @@ function adx(candles, period = 14) {
 // MOMENTUM
 // ============================================================
 
-function momentumPercent(
-  values,
+function Momentum(
+  closes,
   period = 10
 ) {
-  if (values.length <= period) {
+  if (
+    closes.length <= period
+  ) {
     return null;
   }
 
-  const current =
-    values[values.length - 1];
+  const now =
+    closes[closes.length - 1];
 
-  const previous =
-    values[values.length - 1 - period];
+  const old =
+    closes[
+      closes.length - 1 - period
+    ];
 
   if (
-    !Number.isFinite(current) ||
-    !Number.isFinite(previous) ||
-    previous === 0
+    old === 0 ||
+    !Number.isFinite(old)
   ) {
     return null;
   }
 
   return (
-    ((current - previous) / previous) *
+    ((now - old) / old) *
     100
   );
 }
@@ -732,47 +700,47 @@ function momentumPercent(
 // TREND
 // ============================================================
 
-function determineTrend(
+function trend(
   price,
-  ema20,
-  ema50,
-  ema200
+  e20,
+  e50,
+  e200
 ) {
   if (
     !Number.isFinite(price) ||
-    !Number.isFinite(ema20) ||
-    !Number.isFinite(ema50) ||
-    !Number.isFinite(ema200)
+    !Number.isFinite(e20) ||
+    !Number.isFinite(e50) ||
+    !Number.isFinite(e200)
   ) {
     return "NEUTRAL";
   }
 
   if (
-    price > ema20 &&
-    ema20 > ema50 &&
-    ema50 > ema200
+    price > e20 &&
+    e20 > e50 &&
+    e50 > e200
   ) {
     return "BULLISH";
   }
 
   if (
-    price < ema20 &&
-    ema20 < ema50 &&
-    ema50 < ema200
+    price < e20 &&
+    e20 < e50 &&
+    e50 < e200
   ) {
     return "BEARISH";
   }
 
   if (
-    price > ema50 &&
-    ema20 > ema50
+    price > e50 &&
+    e20 > e50
   ) {
     return "BULLISH";
   }
 
   if (
-    price < ema50 &&
-    ema20 < ema50
+    price < e50 &&
+    e20 < e50
   ) {
     return "BEARISH";
   }
@@ -781,55 +749,35 @@ function determineTrend(
 }
 
 // ============================================================
-// CANDLE CONFIRMATION
+// CANDLE
 // ============================================================
 
-function candleConfirmation(candle) {
-  if (!candle) {
-    return {
-      direction: "NEUTRAL",
-      bodyRatio: 0,
-      confirmed: false
-    };
-  }
-
+function candleInfo(c) {
   const range =
-    candle.high - candle.low;
+    c.high - c.low;
 
   if (range <= 0) {
     return {
       direction: "NEUTRAL",
-      bodyRatio: 0,
-      confirmed: false
+      ratio: 0
     };
   }
 
   const body =
     Math.abs(
-      candle.close - candle.open
+      c.close - c.open
     );
-
-  const bodyRatio =
-    body / range;
-
-  const bullish =
-    candle.close > candle.open;
-
-  const bearish =
-    candle.close < candle.open;
 
   return {
     direction:
-      bullish
+      c.close > c.open
         ? "BULLISH"
-        : bearish
+        : c.close < c.open
         ? "BEARISH"
         : "NEUTRAL",
 
-    bodyRatio,
-
-    confirmed:
-      bodyRatio >= CONFIG.candleBodyMin
+    ratio:
+      body / range
   };
 }
 
@@ -837,42 +785,54 @@ function candleConfirmation(candle) {
 // BREAKOUT
 // ============================================================
 
-function detectBreakout(
+function breakout(
   candles,
-  lookback = 20
+  lookback
 ) {
-  if (candles.length <= lookback + 1) {
+  if (
+    candles.length <=
+    lookback + 1
+  ) {
     return "NONE";
   }
 
   const current =
-    candles[candles.length - 1];
+    candles[
+      candles.length - 1
+    ];
 
   const previous =
     candles.slice(
-      candles.length - 1 - lookback,
+      candles.length -
+        1 -
+        lookback,
+
       candles.length - 1
     );
 
-  const highest =
+  const high =
     Math.max(
       ...previous.map(
-        c => c.high
+        x => x.high
       )
     );
 
-  const lowest =
+  const low =
     Math.min(
       ...previous.map(
-        c => c.low
+        x => x.low
       )
     );
 
-  if (current.close > highest) {
+  if (
+    current.close > high
+  ) {
     return "BULLISH";
   }
 
-  if (current.close < lowest) {
+  if (
+    current.close < low
+  ) {
     return "BEARISH";
   }
 
@@ -880,320 +840,304 @@ function detectBreakout(
 }
 
 // ============================================================
-// ANALYZE TIMEFRAME
+// TIMEFRAME ANALYSIS
 // ============================================================
 
-function analyzeTimeframe(candles) {
-  const closed =
-    getClosedCandles(candles);
-
+function analyze(candles) {
   const closes =
-    closed.map(c => c.close);
+    candles.map(
+      x => x.close
+    );
 
-  const current =
-    closed[closed.length - 1];
+  const last =
+    candles[
+      candles.length - 1
+    ];
 
-  const ema20 =
-    latestEMA(closes, 20);
+  const e20 =
+    lastEMA(
+      closes,
+      20
+    );
 
-  const ema50 =
-    latestEMA(closes, 50);
+  const e50 =
+    lastEMA(
+      closes,
+      50
+    );
 
-  const ema200 =
-    latestEMA(closes, 200);
+  const e200 =
+    lastEMA(
+      closes,
+      200
+    );
 
   const rsiValues =
-    rsi(closes, 14);
+    RSI(
+      closes,
+      14
+    );
 
-  const rsi14 =
+  const rsi =
     rsiValues.length
-      ? rsiValues[rsiValues.length - 1]
+      ? rsiValues[
+          rsiValues.length - 1
+        ]
       : null;
 
-  const macdData =
-    macd(closes);
+  const macd =
+    MACD(closes);
 
-  const atrValues =
-    atr(closed, 14);
+  const atr =
+    ATR(
+      candles,
+      14
+    );
 
-  const atr14 =
-    atrValues.length
-      ? atrValues[atrValues.length - 1]
-      : null;
-
-  const adxData =
-    adx(closed, 14);
+  const adx =
+    ADX(
+      candles,
+      14
+    );
 
   const momentum =
-    momentumPercent(
+    Momentum(
       closes,
       10
     );
 
-  const trend =
-    determineTrend(
-      current.close,
-      ema20,
-      ema50,
-      ema200
-    );
-
   const candle =
-    candleConfirmation(
-      current
-    );
-
-  const breakout =
-    detectBreakout(
-      closed,
-      CONFIG.breakoutLookback
-    );
+    candleInfo(last);
 
   return {
-    price: current.close,
+    price: last.close,
 
-    ema20,
-    ema50,
-    ema200,
+    ema20: e20,
+    ema50: e50,
+    ema200: e200,
 
-    rsi: rsi14,
+    rsi,
 
-    macd: macdData.macd,
-    macdSignal: macdData.signal,
-    macdHistogram: macdData.histogram,
+    macd: macd.macd,
+    macdSignal: macd.signal,
+    macdHistogram:
+      macd.histogram,
 
-    adx: adxData.adx,
-    plusDI: adxData.plusDI,
-    minusDI: adxData.minusDI,
+    adx: adx.adx,
+    plusDI: adx.plusDI,
+    minusDI: adx.minusDI,
 
-    atr: atr14,
+    atr,
 
     momentum,
 
-    trend,
+    trend:
+      trend(
+        last.close,
+        e20,
+        e50,
+        e200
+      ),
 
     candleDirection:
       candle.direction,
 
-    candleBodyRatio:
-      candle.bodyRatio,
+    candleBody:
+      candle.ratio,
 
-    candleConfirmed:
-      candle.confirmed,
-
-    breakout
+    breakout:
+      breakout(
+        candles,
+        CONFIG.breakoutLookback
+      )
   };
 }
 
 // ============================================================
-// SIGNAL SCORE
+// SCORE
 // ============================================================
 
-function calculateScore(
-  analysis15,
-  analysis1h
+function score(
+  a15,
+  a1h,
+  symbol
 ) {
   let score = 0;
-
   const reasons = [];
 
-  // ----------------------------------------------------------
-  // EMA STRUCTURE — 15
-  // ----------------------------------------------------------
-
+  // EMA
   if (
-    analysis15.trend === "BULLISH"
+    a15.trend !== "NEUTRAL"
   ) {
     score += 15;
     reasons.push(
-      "EMA structure bullish"
-    );
-  } else if (
-    analysis15.trend === "BEARISH"
-  ) {
-    score += 15;
-    reasons.push(
-      "EMA structure bearish"
+      "15M EMA trend"
     );
   }
 
-  // ----------------------------------------------------------
-  // 1H TREND — 20
-  // ----------------------------------------------------------
-
+  // 1H confirmation
   if (
-    analysis1h.trend !== "NEUTRAL"
+    a1h.trend !== "NEUTRAL"
   ) {
     score += 20;
-
     reasons.push(
-      `1H trend ${analysis1h.trend}`
+      "1H trend confirmed"
     );
   }
 
-  // ----------------------------------------------------------
-  // 15M TREND — 10
-  // ----------------------------------------------------------
-
+  // Same direction
   if (
-    analysis15.trend !== "NEUTRAL"
+    a15.trend !== "NEUTRAL" &&
+    a15.trend === a1h.trend
   ) {
     score += 10;
-
     reasons.push(
-      `15M trend ${analysis15.trend}`
+      "Timeframe alignment"
     );
   }
 
-  // ----------------------------------------------------------
-  // MACD — 15
-  // ----------------------------------------------------------
-
+  // MACD
   if (
-    Number.isFinite(analysis15.macd) &&
-    Number.isFinite(
-      analysis15.macdSignal
-    )
+    Number.isFinite(a15.macd) &&
+    Number.isFinite(a15.macdSignal)
   ) {
     if (
-      analysis15.macd >
-      analysis15.macdSignal
+      a15.trend === "BULLISH" &&
+      a15.macd >
+        a15.macdSignal
     ) {
       score += 15;
-
       reasons.push(
         "MACD bullish"
       );
-    } else if (
-      analysis15.macd <
-      analysis15.macdSignal
+    }
+
+    if (
+      a15.trend === "BEARISH" &&
+      a15.macd <
+        a15.macdSignal
     ) {
       score += 15;
-
       reasons.push(
         "MACD bearish"
       );
     }
   }
 
-  // ----------------------------------------------------------
-  // RSI — 10
-  // ----------------------------------------------------------
-
+  // RSI
   if (
-    Number.isFinite(analysis15.rsi)
+    Number.isFinite(a15.rsi)
   ) {
     if (
-      analysis15.rsi >= 50 &&
-      analysis15.rsi < 70
+      a15.trend === "BULLISH" &&
+      a15.rsi >= 50 &&
+      a15.rsi < 75
     ) {
       score += 10;
-
       reasons.push(
-        "RSI bullish zone"
+        "RSI bullish"
       );
-    } else if (
-      analysis15.rsi <= 50 &&
-      analysis15.rsi > 30
+    }
+
+    if (
+      a15.trend === "BEARISH" &&
+      a15.rsi <= 50 &&
+      a15.rsi > 25
     ) {
       score += 10;
-
       reasons.push(
-        "RSI bearish zone"
+        "RSI bearish"
       );
     }
   }
 
-  // ----------------------------------------------------------
-  // ADX + DI — 10
-  // ----------------------------------------------------------
-
+  // ADX / DI
   if (
-    Number.isFinite(analysis15.adx) &&
-    Number.isFinite(analysis15.plusDI) &&
-    Number.isFinite(analysis15.minusDI)
+    Number.isFinite(a15.adx) &&
+    Number.isFinite(a15.plusDI) &&
+    Number.isFinite(a15.minusDI)
   ) {
     const spread =
       Math.abs(
-        analysis15.plusDI -
-        analysis15.minusDI
+        a15.plusDI -
+        a15.minusDI
       );
 
     if (
-      analysis15.adx >= CONFIG.minADX &&
+      a15.adx >= CONFIG.minADX &&
       spread >= CONFIG.minDISpread
     ) {
       score += 10;
-
       reasons.push(
-        "ADX/DI confirms trend"
+        "ADX/DI confirmed"
       );
     }
   }
 
-  // ----------------------------------------------------------
-  // MOMENTUM — 10
-  // ----------------------------------------------------------
-
+  // Momentum
   if (
     Number.isFinite(
-      analysis15.momentum
+      a15.momentum
     )
   ) {
     if (
-      Math.abs(
-        analysis15.momentum
-      ) >= CONFIG.minMomentum
+      a15.trend === "BULLISH" &&
+      a15.momentum >=
+        CONFIG.minMomentum
     ) {
       score += 10;
-
       reasons.push(
-        "Momentum confirmed"
+        "Bullish momentum"
+      );
+    }
+
+    if (
+      a15.trend === "BEARISH" &&
+      a15.momentum <=
+        -CONFIG.minMomentum
+    ) {
+      score += 10;
+      reasons.push(
+        "Bearish momentum"
       );
     }
   }
 
-  // ----------------------------------------------------------
-  // BREAKOUT — 5
-  // ----------------------------------------------------------
-
+  // Breakout
   if (
-    analysis15.breakout !== "NONE"
+    a15.breakout !== "NONE" &&
+    a15.breakout ===
+      a15.trend
   ) {
     score += 5;
-
     reasons.push(
-      `Breakout ${analysis15.breakout}`
+      "Breakout confirmed"
     );
   }
 
-  // ----------------------------------------------------------
-  // CANDLE — 5
-  // ----------------------------------------------------------
-
+  // Candle
   if (
-    analysis15.candleConfirmed
+    a15.candleDirection ===
+      a15.trend &&
+    a15.candleBody >=
+      CONFIG.candleBodyMin
   ) {
     score += 5;
-
     reasons.push(
       "Candle confirmed"
     );
   }
 
-  // ----------------------------------------------------------
-  // 15M / 1H CONFLICT PENALTY
-  // ----------------------------------------------------------
-
+  // Conflict
   if (
-    analysis15.trend !== "NEUTRAL" &&
-    analysis1h.trend !== "NEUTRAL" &&
-    analysis15.trend !== analysis1h.trend
+    a1h.trend !== "NEUTRAL" &&
+    a15.trend !==
+      a1h.trend
   ) {
-    score *= 0.50;
+    score *= 0.60;
 
     reasons.push(
-      "Timeframe conflict penalty"
+      "15M/1H conflict"
     );
   }
 
@@ -1204,244 +1148,183 @@ function calculateScore(
 }
 
 // ============================================================
-// SIGNAL DIRECTION
+// SIGNAL DECISION
 // ============================================================
 
-function scoreToSignal(
-  analysis15,
-  analysis1h,
-  scoreData
+function signalDecision(
+  a15,
+  a1h,
+  scoreData,
+  symbol
 ) {
-  const score =
-    scoreData.score;
+  const isGold =
+    symbol === "XAU/USD";
+
+  const minimum =
+    isGold
+      ? CONFIG.goldMinScore
+      : CONFIG.normalMinScore;
 
   if (
-    analysis1h.trend === "NEUTRAL"
+    scoreData.score <
+    minimum
   ) {
     return "WAIT";
   }
 
   if (
-    analysis15.trend !==
-    analysis1h.trend
+    a15.trend ===
+    "NEUTRAL"
+  ) {
+    return "WAIT";
+  }
+
+  // ----------------------------------------------------------
+  // GOLD SPECIAL RULE
+  // ----------------------------------------------------------
+  // 1H Neutral is allowed for GOLD if 15M is sufficiently strong.
+  // ----------------------------------------------------------
+
+  if (
+    isGold &&
+    a1h.trend ===
+      "NEUTRAL"
+  ) {
+
+    if (
+      a15.trend === "BULLISH" &&
+      a15.macd >
+        a15.macdSignal &&
+      a15.plusDI >
+        a15.minusDI &&
+      a15.adx >=
+        CONFIG.minADX &&
+      a15.momentum >=
+        CONFIG.minMomentum &&
+      a15.candleDirection ===
+        "BULLISH"
+    ) {
+      return "BUY";
+    }
+
+    if (
+      a15.trend === "BEARISH" &&
+      a15.macd <
+        a15.macdSignal &&
+      a15.minusDI >
+        a15.plusDI &&
+      a15.adx >=
+        CONFIG.minADX &&
+      a15.momentum <=
+        -CONFIG.minMomentum &&
+      a15.candleDirection ===
+        "BEARISH"
+    ) {
+      return "SELL";
+    }
+
+    return "WAIT";
+  }
+
+  // Normal aligned mode
+  if (
+    a15.trend !==
+    a1h.trend
   ) {
     return "WAIT";
   }
 
   if (
-    score < CONFIG.minScore
+    a15.trend ===
+    "BULLISH"
   ) {
-    return "WAIT";
-  }
-
-  const adx =
-    analysis15.adx;
-
-  const plusDI =
-    analysis15.plusDI;
-
-  const minusDI =
-    analysis15.minusDI;
-
-  if (
-    !Number.isFinite(adx) ||
-    !Number.isFinite(plusDI) ||
-    !Number.isFinite(minusDI)
-  ) {
-    return "WAIT";
+    if (
+      a15.macd >
+        a15.macdSignal &&
+      a15.plusDI >
+        a15.minusDI &&
+      a15.adx >=
+        CONFIG.minADX &&
+      a15.momentum >=
+        CONFIG.minMomentum &&
+      a15.candleDirection ===
+        "BULLISH"
+    ) {
+      return "BUY";
+    }
   }
 
   if (
-    adx < CONFIG.minADX
-  ) {
-    return "WAIT";
-  }
-
-  const diSpread =
-    Math.abs(
-      plusDI - minusDI
-    );
-
-  if (
-    diSpread < CONFIG.minDISpread
-  ) {
-    return "WAIT";
-  }
-
-  const momentum =
-    analysis15.momentum;
-
-  if (
-    !Number.isFinite(momentum)
-  ) {
-    return "WAIT";
-  }
-
-  const candle =
-    analysis15.candleDirection;
-
-  if (
-    analysis15.trend === "BULLISH"
+    a15.trend ===
+    "BEARISH"
   ) {
     if (
-      analysis15.macd <=
-      analysis15.macdSignal
+      a15.macd <
+        a15.macdSignal &&
+      a15.minusDI >
+        a15.plusDI &&
+      a15.adx >=
+        CONFIG.minADX &&
+      a15.momentum <=
+        -CONFIG.minMomentum &&
+      a15.candleDirection ===
+        "BEARISH"
     ) {
-      return "WAIT";
+      return "SELL";
     }
-
-    if (
-      momentum <
-      CONFIG.minMomentum
-    ) {
-      return "WAIT";
-    }
-
-    if (
-      candle !== "BULLISH"
-    ) {
-      return "WAIT";
-    }
-
-    if (
-      plusDI <= minusDI
-    ) {
-      return "WAIT";
-    }
-
-    return "BUY";
-  }
-
-  if (
-    analysis15.trend === "BEARISH"
-  ) {
-    if (
-      analysis15.macd >=
-      analysis15.macdSignal
-    ) {
-      return "WAIT";
-    }
-
-    if (
-      momentum >
-      -CONFIG.minMomentum
-    ) {
-      return "WAIT";
-    }
-
-    if (
-      candle !== "BEARISH"
-    ) {
-      return "WAIT";
-    }
-
-    if (
-      minusDI <= plusDI
-    ) {
-      return "WAIT";
-    }
-
-    return "SELL";
   }
 
   return "WAIT";
 }
 
 // ============================================================
-// SIGNAL STRENGTH
-// ============================================================
-
-function getStrength(score) {
-  if (
-    score >= CONFIG.eliteScore
-  ) {
-    return "ELITE";
-  }
-
-  if (
-    score >= CONFIG.strongScore
-  ) {
-    return "STRONG";
-  }
-
-  if (
-    score >= CONFIG.minScore
-  ) {
-    return "CONFIRMED";
-  }
-
-  return "WEAK";
-}
-
-// ============================================================
-// PRICE PRECISION
-// ============================================================
-
-function getPriceDecimals(symbol) {
-  if (
-    symbol === "XAU/USD"
-  ) {
-    return 2;
-  }
-
-  if (
-    symbol === "USD/JPY"
-  ) {
-    return 3;
-  }
-
-  return 5;
-}
-
-// ============================================================
 // TRADE PLAN
 // ============================================================
 
-function buildTradePlan(
+function tradePlan(
   signal,
   analysis,
   symbol
 ) {
-  const entry =
-    safeNumber(
+  const price =
+    Number(
       analysis.price
     );
 
-  const atrValue =
-    safeNumber(
+  const atr =
+    Number(
       analysis.atr
     );
 
   if (
-    entry <= 0 ||
-    atrValue <= 0
+    !Number.isFinite(price) ||
+    !Number.isFinite(atr) ||
+    atr <= 0
   ) {
     return null;
   }
 
   const decimals =
-    getPriceDecimals(symbol);
-
-  const slDistance =
-    atrValue *
-    CONFIG.atrSLMultiplier;
+    symbol === "XAU/USD"
+      ? 2
+      : symbol === "USD/JPY"
+      ? 3
+      : 5;
 
   const limitDistance =
-    atrValue *
+    atr *
     CONFIG.limitATRMultiplier;
 
-  // ----------------------------------------------------------
-  // IMPORTANT:
-// SL / TP are calculated from LIMIT ENTRY itself.
-// This keeps Entry, SL and TP mathematically consistent.
-// ----------------------------------------------------------
+  const risk =
+    atr *
+    CONFIG.atrSLMultiplier;
 
-  const limitEntry =
+  const entry =
     signal === "BUY"
-      ? entry - limitDistance
-      : entry + limitDistance;
+      ? price - limitDistance
+      : price + limitDistance;
 
-  let stopLoss;
+  let sl;
   let tp1;
   let tp2;
   let tp3;
@@ -1449,54 +1332,52 @@ function buildTradePlan(
   if (
     signal === "BUY"
   ) {
-    stopLoss =
-      limitEntry -
-      slDistance;
+    sl =
+      entry - risk;
 
     tp1 =
-      limitEntry +
-      slDistance *
+      entry +
+      risk *
       CONFIG.tp1RiskReward;
 
     tp2 =
-      limitEntry +
-      slDistance *
+      entry +
+      risk *
       CONFIG.tp2RiskReward;
 
     tp3 =
-      limitEntry +
-      slDistance *
+      entry +
+      risk *
       CONFIG.tp3RiskReward;
   } else {
-    stopLoss =
-      limitEntry +
-      slDistance;
+    sl =
+      entry + risk;
 
     tp1 =
-      limitEntry -
-      slDistance *
+      entry -
+      risk *
       CONFIG.tp1RiskReward;
 
     tp2 =
-      limitEntry -
-      slDistance *
+      entry -
+      risk *
       CONFIG.tp2RiskReward;
 
     tp3 =
-      limitEntry -
-      slDistance *
+      entry -
+      risk *
       CONFIG.tp3RiskReward;
   }
 
   return {
     marketPrice:
-      round(entry, decimals),
+      round(price, decimals),
 
     limitEntry:
-      round(limitEntry, decimals),
+      round(entry, decimals),
 
     stopLoss:
-      round(stopLoss, decimals),
+      round(sl, decimals),
 
     tp1:
       round(tp1, decimals),
@@ -1508,10 +1389,7 @@ function buildTradePlan(
       round(tp3, decimals),
 
     atr:
-      round(atrValue, decimals),
-
-    riskDistance:
-      round(slDistance, decimals),
+      round(atr, decimals),
 
     signal
   };
@@ -1521,54 +1399,52 @@ function buildTradePlan(
 // COOLDOWN
 // ============================================================
 
-function cooldownKey(
+function key(
   symbol,
   signal
 ) {
   return `${symbol}:${signal}`;
 }
 
-function isInCooldown(
+function cooling(
   symbol,
   signal
 ) {
-  const key =
-    cooldownKey(
+  const k =
+    key(
       symbol,
       signal
     );
 
   const last =
-    signalCooldown.get(key);
+    cooldowns.get(k);
 
   if (!last) {
     return false;
   }
 
-  const elapsed =
+  const age =
     Date.now() - last;
 
-  const cooldownMs =
-    CONFIG.signalCooldownMinutes *
-    60 *
-    1000;
-
   if (
-    elapsed >= cooldownMs
+    age >=
+    CONFIG.signalCooldownMinutes *
+      60 *
+      1000
   ) {
-    signalCooldown.delete(key);
+    cooldowns.delete(k);
     return false;
   }
 
   return true;
 }
 
-function markCooldown(
+function mark(
   symbol,
   signal
 ) {
-  signalCooldown.set(
-    cooldownKey(
+  cooldowns.set(
+    key(
       symbol,
       signal
     ),
@@ -1577,19 +1453,19 @@ function markCooldown(
 }
 
 // ============================================================
-// TELEGRAM MESSAGE
+// TELEGRAM FORMAT
 // ============================================================
 
-function formatTelegramMessage(
+function telegramMessage(
   symbol,
   signal,
   trade
 ) {
-  const isGold =
+  const gold =
     symbol === "XAU/USD";
 
   const title =
-    isGold
+    gold
       ? "💎 طلا (XAUUSD)"
       : `📊 ${symbol}`;
 
@@ -1618,24 +1494,24 @@ function formatTelegramMessage(
 }
 
 // ============================================================
-// SEND TELEGRAM
+// TELEGRAM SEND
 // ============================================================
 
-async function sendTelegramMessage(
+async function sendTelegram(
   env,
   message
 ) {
   const token =
-    getTelegramToken(env);
+    telegramToken(env);
 
   const chatId =
-    getTelegramChatId(env);
+    telegramChatId(env);
 
   if (!token) {
     return {
       ok: false,
       error:
-        "TELEGRAM_BOT_TOKEN is missing"
+        "TELEGRAM_BOT_TOKEN missing"
     };
   }
 
@@ -1643,7 +1519,7 @@ async function sendTelegramMessage(
     return {
       ok: false,
       error:
-        "TELEGRAM_CHAT_ID is missing"
+        "TELEGRAM_CHAT_ID missing"
     };
   }
 
@@ -1652,163 +1528,62 @@ async function sendTelegramMessage(
 
   try {
     const response =
-      await fetch(url, {
-        method: "POST",
+      await fetch(
+        url,
+        {
+          method: "POST",
 
-        headers: {
-          "content-type":
-            "application/json"
-        },
+          headers: {
+            "content-type":
+              "application/json"
+          },
 
-        body: JSON.stringify({
-          chat_id: chatId,
-          text: message,
+          body: JSON.stringify({
+            chat_id: chatId,
+            text: message,
 
-          disable_web_page_preview:
-            true
-        })
-      });
+            disable_web_page_preview:
+              true
+          })
+        }
+      );
 
     const data =
       await response.json();
 
-    if (!response.ok || !data.ok) {
-      runtimeStats.telegramFailed++;
+    if (
+      !response.ok ||
+      !data.ok
+    ) {
+      STATS.telegramFailed++;
 
       return {
         ok: false,
-        status: response.status,
-        telegram: data
+        status:
+          response.status,
+        telegram:
+          data
       };
     }
 
-    runtimeStats.telegramSent++;
-    runtimeStats.lastTelegram =
-      new Date().toISOString();
+    STATS.telegramSent++;
 
     return {
       ok: true,
-      telegram: data
+      telegram:
+        data
     };
 
-  } catch (error) {
-    runtimeStats.telegramFailed++;
+  } catch(error) {
+
+    STATS.telegramFailed++;
 
     return {
       ok: false,
-      error: error.message
+      error:
+        error.message
     };
   }
-}
-
-// ============================================================
-// PROCESS SIGNAL
-// ============================================================
-
-async function processSignal(
-  env,
-  symbol,
-  analysis15,
-  analysis1h,
-  scoreData
-) {
-  const signal =
-    scoreToSignal(
-      analysis15,
-      analysis1h,
-      scoreData
-    );
-
-  const strength =
-    getStrength(
-      scoreData.score
-    );
-
-  const result = {
-    symbol,
-    signal,
-    strength,
-    score:
-      scoreData.score,
-
-    trend15m:
-      analysis15.trend,
-
-    trend1h:
-      analysis1h.trend,
-
-    reasons:
-      scoreData.reasons,
-
-    trade: null,
-
-    telegram: null
-  };
-
-  if (
-    signal !== "BUY" &&
-    signal !== "SELL"
-  ) {
-    return result;
-  }
-
-  if (
-    isInCooldown(
-      symbol,
-      signal
-    )
-  ) {
-    result.cooldown = true;
-    return result;
-  }
-
-  const trade =
-    buildTradePlan(
-      signal,
-      analysis15,
-      symbol
-    );
-
-  if (!trade) {
-    return result;
-  }
-
-  result.trade = trade;
-
-  const message =
-    formatTelegramMessage(
-      symbol,
-      signal,
-      trade
-    );
-
-  const telegram =
-    await sendTelegramMessage(
-      env,
-      message
-    );
-
-  result.telegram =
-    telegram;
-
-  if (telegram.ok) {
-    markCooldown(
-      symbol,
-      signal
-    );
-
-    runtimeStats.signals++;
-
-    runtimeStats.lastSignal = {
-      symbol,
-      signal,
-      score: scoreData.score,
-      time:
-        new Date().toISOString()
-    };
-  }
-
-  return result;
 }
 
 // ============================================================
@@ -1820,7 +1595,7 @@ async function analyzeSymbol(
   symbol
 ) {
   const candles15 =
-    await fetchTimeSeries(
+    await getCandles(
       env,
       symbol,
       CONFIG.interval,
@@ -1828,39 +1603,32 @@ async function analyzeSymbol(
     );
 
   const candles1h =
-    await fetchTimeSeries(
+    await getCandles(
       env,
       symbol,
       CONFIG.confirmationInterval,
       CONFIG.outputsize1h
     );
 
-  const analysis15 =
-    analyzeTimeframe(
-      candles15
-    );
+  const a15 =
+    analyze(candles15);
 
-  const analysis1h =
-    analyzeTimeframe(
-      candles1h
-    );
+  const a1h =
+    analyze(candles1h);
 
-  const scoreData =
-    calculateScore(
-      analysis15,
-      analysis1h
+  const scored =
+    score(
+      a15,
+      a1h,
+      symbol
     );
 
   const signal =
-    scoreToSignal(
-      analysis15,
-      analysis1h,
-      scoreData
-    );
-
-  const strength =
-    getStrength(
-      scoreData.score
+    signalDecision(
+      a15,
+      a1h,
+      scored,
+      symbol
     );
 
   return {
@@ -1868,28 +1636,119 @@ async function analyzeSymbol(
 
     signal,
 
-    strength,
-
     score:
-      scoreData.score,
-
-    trend15m:
-      analysis15.trend,
-
-    trend1h:
-      analysis1h.trend,
-
-    alignment:
-      analysis15.trend ===
-      analysis1h.trend
-        ? analysis15.trend
-        : "MIXED",
-
-    analysis15,
-    analysis1h,
+      scored.score,
 
     reasons:
-      scoreData.reasons
+      scored.reasons,
+
+    analysis15:
+      a15,
+
+    analysis1h:
+      a1h,
+
+    alignment:
+      a15.trend ===
+      a1h.trend
+        ? a15.trend
+        : "MIXED"
+  };
+}
+
+// ============================================================
+// PROCESS SIGNAL
+// ============================================================
+
+async function process(
+  env,
+  result
+) {
+  if (
+    result.signal !== "BUY" &&
+    result.signal !== "SELL"
+  ) {
+    return {
+      ...result,
+      telegram: null,
+      trade: null
+    };
+  }
+
+  if (
+    cooling(
+      result.symbol,
+      result.signal
+    )
+  ) {
+    return {
+      ...result,
+      cooldown: true,
+      telegram: null,
+      trade: null
+    };
+  }
+
+  const plan =
+    tradePlan(
+      result.signal,
+      result.analysis15,
+      result.symbol
+    );
+
+  if (!plan) {
+    return {
+      ...result,
+      telegram: null,
+      trade: null
+    };
+  }
+
+  const message =
+    telegramMessage(
+      result.symbol,
+      result.signal,
+      plan
+    );
+
+  const telegram =
+    await sendTelegram(
+      env,
+      message
+    );
+
+  if (
+    telegram.ok
+  ) {
+    mark(
+      result.symbol,
+      result.signal
+    );
+
+    STATS.signals++;
+
+    STATS.lastSignal = {
+      symbol:
+        result.symbol,
+
+      signal:
+        result.signal,
+
+      entry:
+        plan.limitEntry,
+
+      time:
+        new Date().toISOString()
+    };
+  }
+
+  return {
+    ...result,
+
+    trade:
+      plan,
+
+    telegram
   };
 }
 
@@ -1898,71 +1757,51 @@ async function analyzeSymbol(
 // ============================================================
 
 async function runEngine(env) {
-  runtimeStats.runs++;
-  runtimeStats.lastRun =
+  STATS.runs++;
+
+  STATS.lastRun =
     new Date().toISOString();
+
+  const ordered = [
+    "XAU/USD",
+    "EUR/USD",
+    "GBP/USD",
+    "USD/JPY"
+  ];
 
   const results = [];
 
-  // Gold first
-  const orderedSymbols = [
-    CONFIG.primarySymbol,
-
-    ...CONFIG.symbols.filter(
-      s =>
-        s !==
-        CONFIG.primarySymbol
-    )
-  ];
-
   for (
-    const symbol of orderedSymbols
+    const symbol of ordered
   ) {
     try {
-      const analyzed =
+
+      const result =
         await analyzeSymbol(
           env,
           symbol
         );
 
       const processed =
-        await processSignal(
+        await process(
           env,
-          symbol,
-          analyzed.analysis15,
-          analyzed.analysis1h,
-          {
-            score:
-              analyzed.score,
-
-            reasons:
-              analyzed.reasons
-          }
+          result
         );
 
-      results.push({
-        ...analyzed,
-        trade:
-          processed.trade,
+      results.push(
+        processed
+      );
 
-        telegram:
-          processed.telegram,
+    } catch(error) {
 
-        cooldown:
-          processed.cooldown || false
-      });
-
-    } catch (error) {
       results.push({
         symbol,
         signal: "ERROR",
         error:
           error.message
       });
-    }
 
-    // Small pause between Twelve Data calls
-    await sleep(150);
+    }
   }
 
   return {
@@ -1974,16 +1813,57 @@ async function runEngine(env) {
     name:
       CONFIG.name,
 
-    primarySymbol:
-      CONFIG.primarySymbol,
-
     generatedAt:
       new Date().toISOString(),
 
     results,
 
     stats:
-      runtimeStats
+      STATS
+  };
+}
+
+// ============================================================
+// API ONLY — NO TELEGRAM
+// ============================================================
+
+async function apiSignals(env) {
+  const results = [];
+
+  for (
+    const symbol of CONFIG.symbols
+  ) {
+    try {
+
+      results.push(
+        await analyzeSymbol(
+          env,
+          symbol
+        )
+      );
+
+    } catch(error) {
+
+      results.push({
+        symbol,
+        signal: "ERROR",
+        error:
+          error.message
+      });
+
+    }
+  }
+
+  return {
+    ok: true,
+
+    version:
+      CONFIG.version,
+
+    generatedAt:
+      new Date().toISOString(),
+
+    results
   };
 }
 
@@ -1993,17 +1873,17 @@ async function runEngine(env) {
 
 async function telegramTest(env) {
   const token =
-    getTelegramToken(env);
+    telegramToken(env);
 
   const chatId =
-    getTelegramChatId(env);
+    telegramChatId(env);
 
   if (!token) {
     return {
       ok: false,
       telegram: false,
       error:
-        "TELEGRAM_BOT_TOKEN is missing"
+        "TELEGRAM_BOT_TOKEN missing"
     };
   }
 
@@ -2012,7 +1892,7 @@ async function telegramTest(env) {
       ok: false,
       telegram: false,
       error:
-        "TELEGRAM_CHAT_ID is missing"
+        "TELEGRAM_CHAT_ID missing"
     };
   }
 
@@ -2022,13 +1902,13 @@ async function telegramTest(env) {
     "Telegram connection test",
     "",
     "FOREX SIGNAL ENGINE V5.4",
-    "XAU/USD Gold Pro",
+    "XAU/USD GOLD FOCUS",
     "",
     "اتصال تلگرام با موفقیت تست شد."
   ].join("\n");
 
   const result =
-    await sendTelegramMessage(
+    await sendTelegram(
       env,
       message
     );
@@ -2048,16 +1928,20 @@ async function telegramTest(env) {
 // DASHBOARD
 // ============================================================
 
-const DASHBOARD_HTML = `
-<!DOCTYPE html>
+const DASHBOARD = `
+<!doctype html>
+
 <html lang="fa" dir="rtl">
+
 <head>
+
 <meta charset="UTF-8">
+
 <meta name="viewport"
 content="width=device-width,initial-scale=1">
 
 <title>
-Forex Signal Engine V5.4 Gold Pro
+Forex Signal Engine V5.4 Gold Focus
 </title>
 
 <style>
@@ -2068,455 +1952,396 @@ Forex Signal Engine V5.4 Gold Pro
 
 body {
   margin: 0;
-  background:
-    linear-gradient(
-      135deg,
-      #05070d,
-      #101522
-    );
 
-  color: #f5f5f5;
+  background:
+    #070a10;
+
+  color:
+    #f4f4f4;
 
   font-family:
     Arial,
     Tahoma,
     sans-serif;
-
-  min-height: 100vh;
 }
 
-.container {
+.wrap {
   max-width: 900px;
-  margin: auto;
-  padding: 18px;
+
+  margin:
+    auto;
+
+  padding:
+    15px;
+}
+
+.header,
+.card {
+  background:
+    #111722;
+
+  border:
+    1px solid #222b3a;
+
+  border-radius:
+    18px;
+
+  padding:
+    18px;
+
+  margin-bottom:
+    14px;
 }
 
 .header {
-  background:
-    rgba(255,255,255,.05);
-
-  border:
-    1px solid
-    rgba(255,255,255,.1);
-
-  border-radius: 20px;
-
-  padding: 20px;
-
-  margin-bottom: 16px;
-
-  text-align: center;
+  text-align:
+    center;
 }
 
-.header h1 {
-  margin: 0 0 8px;
-
-  font-size: 25px;
+h1 {
+  margin:
+    0 0 7px;
 }
 
-.version {
-  color: #aaa;
+.muted {
+  color:
+    #9299a5;
 
-  font-size: 13px;
-}
-
-.card {
-  background:
-    rgba(255,255,255,.055);
-
-  border:
-    1px solid
-    rgba(255,255,255,.09);
-
-  border-radius: 18px;
-
-  padding: 18px;
-
-  margin-bottom: 14px;
-
-  box-shadow:
-    0 10px 30px
-    rgba(0,0,0,.18);
+  font-size:
+    13px;
 }
 
 .gold {
-  border:
-    1px solid
-    rgba(255,190,0,.35);
-}
-
-.symbol {
-  font-size: 14px;
-
-  color: #aaa;
-
-  margin-bottom: 8px;
+  border-color:
+    #9c7928;
 }
 
 .price {
-  font-size: 34px;
+  text-align:
+    center;
 
-  font-weight: 700;
+  font-size:
+    34px;
 
-  direction: ltr;
+  font-weight:
+    bold;
 
-  text-align: center;
+  direction:
+    ltr;
 
-  margin: 10px 0;
+  margin:
+    12px 0;
 }
 
 .status {
-  text-align: center;
+  text-align:
+    center;
 
-  font-size: 20px;
+  font-size:
+    20px;
 
-  font-weight: 700;
+  font-weight:
+    bold;
 
-  margin: 12px 0;
-}
-
-.wait {
-  color: #ffd166;
+  margin:
+    12px;
 }
 
 .buy {
-  color: #42d392;
+  color:
+    #43d17c;
 }
 
 .sell {
-  color: #ff667a;
+  color:
+    #ff6376;
+}
+
+.wait {
+  color:
+    #f2c75c;
 }
 
 .grid {
-  display: grid;
+  display:
+    grid;
 
   grid-template-columns:
     repeat(2,1fr);
 
-  gap: 10px;
+  gap:
+    9px;
 }
 
-.metric {
+.box {
   background:
-    rgba(255,255,255,.04);
+    #0b1018;
 
-  border-radius: 12px;
+  border-radius:
+    12px;
 
-  padding: 11px;
+  padding:
+    11px;
 }
 
-.metric .label {
-  color: #999;
+.label {
+  color:
+    #7f8998;
 
-  font-size: 12px;
+  font-size:
+    12px;
 
-  margin-bottom: 5px;
+  margin-bottom:
+    5px;
 }
 
-.metric .value {
-  font-size: 16px;
+.value {
+  direction:
+    ltr;
 
-  font-weight: 700;
+  font-weight:
+    bold;
 
-  direction: ltr;
-
-  text-align: right;
+  font-size:
+    15px;
 }
 
-.score {
-  font-size: 32px;
+.footer {
+  text-align:
+    center;
 
-  font-weight: 800;
+  color:
+    #707887;
 
-  text-align: center;
+  font-size:
+    12px;
 
-  margin: 15px 0;
-}
-
-.refresh {
-  text-align: center;
-
-  color: #999;
-
-  font-size: 12px;
-
-  margin-top: 12px;
-}
-
-button {
-  border: 0;
-
-  border-radius: 12px;
-
-  padding: 12px 18px;
-
-  font-weight: 700;
-
-  cursor: pointer;
-
-  background: #ffffff;
-
-  color: #111;
-
-  margin: 4px;
-}
-
-pre {
-  white-space: pre-wrap;
-
-  word-break: break-word;
-
-  direction: ltr;
-
-  text-align: left;
-
-  font-size: 12px;
-
-  color: #ccc;
+  margin:
+    18px;
 }
 
 @media(max-width:600px) {
-
-  .grid {
-    grid-template-columns:
-      1fr 1fr;
-  }
-
   .price {
-    font-size: 28px;
-  }
-
-  .header h1 {
-    font-size: 21px;
+    font-size:
+      28px;
   }
 }
 
 </style>
+
 </head>
 
 <body>
 
-<div class="container">
+<div class="wrap">
 
 <div class="header">
 
-<h1>
-FX
-</h1>
+<h1>FX</h1>
 
 <div>
 موتور سیگنال فارکس
-V5.4 · Gold Pro
+V5.4 · Gold Focus
 </div>
 
-<div class="version">
-XAU/USD Focus · 15M + 1H
+<div class="muted">
+XAU/USD · 15M + 1H
 </div>
 
 </div>
 
-<div id="content">
-
-<div class="card">
+<div id="app">
 در حال دریافت اطلاعات...
 </div>
 
-</div>
-
-<div class="refresh">
-رفرش خودکار: <span id="count">60</span> ثانیه
+<div class="footer">
+رفرش خودکار هر 30 ثانیه
 </div>
 
 </div>
 
 <script>
 
-let countdown = 60;
+function f(x) {
 
-function esc(value) {
+  const n =
+    Number(x);
 
-  return String(value ?? "")
-    .replaceAll("&","&amp;")
-    .replaceAll("<","&lt;")
-    .replaceAll(">","&gt;")
-    .replaceAll('"',"&quot;")
-    .replaceAll("'","&#039;");
+  return Number.isFinite(n)
+    ? n.toFixed(2)
+    : "-";
 
 }
 
-function formatValue(value) {
+function esc(x) {
 
-  if (
-    value === null ||
-    value === undefined ||
-    !Number.isFinite(Number(value))
-  ) {
-    return "-";
-  }
-
-  return Number(value).toFixed(2);
+  return String(
+    x ?? ""
+  )
+  .replaceAll("&","&amp;")
+  .replaceAll("<","&lt;")
+  .replaceAll(">","&gt;");
 
 }
 
-function signalClass(signal) {
+function card(item) {
 
-  if (signal === "BUY")
-    return "buy";
+  const a =
+    item.analysis15 || {};
 
-  if (signal === "SELL")
-    return "sell";
+  const h =
+    item.analysis1h || {};
 
-  return "wait";
-
-}
-
-function signalText(signal) {
-
-  if (signal === "BUY")
-    return "BUY";
-
-  if (signal === "SELL")
-    return "SELL";
-
-  return "صبر کن";
-
-}
-
-function renderSymbol(item, primary=false) {
-
-  const a = item.analysis15 || {};
-
-  const h = item.analysis1h || {};
+  const signal =
+    item.signal;
 
   const cls =
-    signalClass(item.signal);
+    signal === "BUY"
+      ? "buy"
+      : signal === "SELL"
+      ? "sell"
+      : "wait";
 
-  const alignment =
-    item.alignment || "MIXED";
+  const text =
+    signal === "BUY"
+      ? "BUY LIMIT"
+      : signal === "SELL"
+      ? "SELL LIMIT"
+      : "صبر کن";
 
   return \`
-  <div class="card \${primary ? "gold" : ""}">
 
-    <div class="symbol">
+  <div class="card \${item.symbol === "XAU/USD" ? "gold" : ""}">
+
+    <div class="muted">
       \${esc(item.symbol)}
-      \${primary ? " — نماد اصلی" : ""}
     </div>
 
     <div class="price">
-      \${formatValue(a.price)}
+      \${f(a.price)}
     </div>
 
     <div class="status \${cls}">
-      \${signalText(item.signal)}
-      ·
-      \${esc(item.strength || "WEAK")}
+      \${text}
     </div>
 
     <div class="grid">
 
-      <div class="metric">
+      <div class="box">
         <div class="label">
           روند ۱۵ دقیقه
         </div>
+
         <div class="value">
           \${esc(a.trend)}
         </div>
       </div>
 
-      <div class="metric">
+      <div class="box">
         <div class="label">
           روند ۱ ساعته
         </div>
+
         <div class="value">
           \${esc(h.trend)}
         </div>
       </div>
 
-      <div class="metric">
+      <div class="box">
         <div class="label">
           هم‌راستایی
         </div>
+
         <div class="value">
-          \${esc(alignment)}
+          \${esc(item.alignment)}
         </div>
       </div>
 
-      <div class="metric">
+      <div class="box">
         <div class="label">
-          امتیاز تحلیل
+          امتیاز
         </div>
+
         <div class="value">
           \${esc(item.score)}/100
         </div>
       </div>
 
-      <div class="metric">
+      <div class="box">
         <div class="label">
           RSI 14
         </div>
+
         <div class="value">
-          \${formatValue(a.rsi)}
+          \${f(a.rsi)}
         </div>
       </div>
 
-      <div class="metric">
+      <div class="box">
         <div class="label">
           MACD
         </div>
+
         <div class="value">
-          \${formatValue(a.macd)}
+          \${f(a.macd)}
         </div>
       </div>
 
-      <div class="metric">
+      <div class="box">
         <div class="label">
           ADX 14
         </div>
+
         <div class="value">
-          \${formatValue(a.adx)}
+          \${f(a.adx)}
         </div>
       </div>
 
-      <div class="metric">
+      <div class="box">
         <div class="label">
           +DI
         </div>
+
         <div class="value">
-          \${formatValue(a.plusDI)}
+          \${f(a.plusDI)}
         </div>
       </div>
 
-      <div class="metric">
+      <div class="box">
         <div class="label">
           -DI
         </div>
+
         <div class="value">
-          \${formatValue(a.minusDI)}
+          \${f(a.minusDI)}
         </div>
       </div>
 
-      <div class="metric">
+      <div class="box">
         <div class="label">
-          ATR 14
+          ATR
         </div>
+
         <div class="value">
-          \${formatValue(a.atr)}
+          \${f(a.atr)}
         </div>
       </div>
 
-      <div class="metric">
+      <div class="box">
         <div class="label">
           Momentum
         </div>
+
         <div class="value">
-          \${formatValue(a.momentum)}%
+          \${f(a.momentum)}%
         </div>
       </div>
 
-      <div class="metric">
+      <div class="box">
         <div class="label">
-          شکست قیمت
+          Breakout
         </div>
+
         <div class="value">
           \${esc(a.breakout)}
         </div>
@@ -2526,26 +2351,42 @@ function renderSymbol(item, primary=false) {
 
     \${item.trade ? \`
 
-      <div style="margin-top:15px">
+      <div class="grid" style="margin-top:10px">
 
-        <div class="metric">
-          نقطه ورود:
-          \${formatValue(item.trade.limitEntry)}
+        <div class="box">
+          <div class="label">
+            نقطه ورود
+          </div>
+          <div class="value">
+            \${f(item.trade.limitEntry)}
+          </div>
         </div>
 
-        <div class="metric">
-          حد ضرر:
-          \${formatValue(item.trade.stopLoss)}
+        <div class="box">
+          <div class="label">
+            حد ضرر
+          </div>
+          <div class="value">
+            \${f(item.trade.stopLoss)}
+          </div>
         </div>
 
-        <div class="metric">
-          TP1:
-          \${formatValue(item.trade.tp1)}
+        <div class="box">
+          <div class="label">
+            TP1
+          </div>
+          <div class="value">
+            \${f(item.trade.tp1)}
+          </div>
         </div>
 
-        <div class="metric">
-          TP2:
-          \${formatValue(item.trade.tp2)}
+        <div class="box">
+          <div class="label">
+            TP2
+          </div>
+          <div class="value">
+            \${f(item.trade.tp2)}
+          </div>
         </div>
 
       </div>
@@ -2553,259 +2394,78 @@ function renderSymbol(item, primary=false) {
     \` : ""}
 
   </div>
+
   \`;
 
 }
 
-async function loadData() {
+async function load() {
 
   try {
 
-    const response =
+    const r =
       await fetch(
         "/api/signals?t=" +
         Date.now()
       );
 
-    const data =
-      await response.json();
+    const d =
+      await r.json();
 
-    if (
-      !data.ok
-    ) {
-
-      document.getElementById(
-        "content"
-      ).innerHTML =
-        \`
-        <div class="card">
-          خطا در دریافت اطلاعات
-          <pre>\${esc(
-            data.error || ""
-          )}</pre>
-        </div>
-        \`;
-
-      return;
-
+    if (!d.ok) {
+      throw new Error(
+        d.error || "Error"
+      );
     }
 
-    const results =
-      data.results || [];
-
-    let html = "";
-
-    results.forEach(
-      (item,index) => {
-
-        html += renderSymbol(
-          item,
-          index === 0
-        );
-
-      }
-    );
-
     document.getElementById(
-      "content"
-    ).innerHTML = html;
-
-    countdown = 60;
-
-  } catch(error) {
-
-    document.getElementById(
-      "content"
+      "app"
     ).innerHTML =
-      \`
-      <div class="card">
-        خطا در اتصال
-        <pre>\${esc(
-          error.message
-        )}</pre>
-      </div>
-      \`;
+      d.results
+        .map(card)
+        .join("");
+
+  } catch(e) {
+
+    document.getElementById(
+      "app"
+    ).innerHTML =
+
+      '<div class="card">' +
+      'خطا در دریافت اطلاعات<br>' +
+      '<small>' +
+      esc(e.message) +
+      '</small></div>';
 
   }
 
 }
 
-loadData();
+load();
 
 setInterval(
-  loadData,
-  60000
-);
-
-setInterval(
-  () => {
-
-    countdown--;
-
-    if (
-      countdown < 0
-    ) {
-      countdown = 60;
-    }
-
-    document.getElementById(
-      "count"
-    ).textContent =
-      countdown;
-
-  },
-  1000
+  load,
+  30000
 );
 
 </script>
 
 </body>
+
 </html>
 `;
 
 // ============================================================
-// API SIGNALS
-// NOTE:
-// /api/signals DOES NOT SEND TELEGRAM.
-// It only analyzes.
-// ============================================================
-
-async function apiSignals(env) {
-  const results = [];
-
-  const orderedSymbols = [
-    CONFIG.primarySymbol,
-
-    ...CONFIG.symbols.filter(
-      s =>
-        s !==
-        CONFIG.primarySymbol
-    )
-  ];
-
-  for (
-    const symbol of orderedSymbols
-  ) {
-    try {
-      const result =
-        await analyzeSymbol(
-          env,
-          symbol
-        );
-
-      results.push(
-        result
-      );
-
-    } catch (error) {
-
-      results.push({
-        symbol,
-        signal: "ERROR",
-        error:
-          error.message
-      });
-
-    }
-
-    await sleep(150);
-  }
-
-  return {
-    ok: true,
-
-    version:
-      CONFIG.version,
-
-    name:
-      CONFIG.name,
-
-    generatedAt:
-      new Date().toISOString(),
-
-    results
-  };
-}
-
-// ============================================================
-// HEALTH
-// ============================================================
-
-function health(env) {
-  return {
-    ok: true,
-
-    service:
-      "FOREX SIGNAL ENGINE",
-
-    version:
-      CONFIG.version,
-
-    name:
-      CONFIG.name,
-
-    primarySymbol:
-      CONFIG.primarySymbol,
-
-    telegramConfigured:
-      Boolean(
-        getTelegramToken(env) &&
-        getTelegramChatId(env)
-      ),
-
-    twelveDataConfigured:
-      Boolean(
-        getTwelveDataKey(env)
-      ),
-
-    time:
-      new Date().toISOString()
-  };
-}
-
-// ============================================================
-// STATS
-// ============================================================
-
-function getStats() {
-  return {
-    ok: true,
-
-    version:
-      CONFIG.version,
-
-    config: {
-      primarySymbol:
-        CONFIG.primarySymbol,
-
-      minScore:
-        CONFIG.minScore,
-
-      minADX:
-        CONFIG.minADX,
-
-      minDISpread:
-        CONFIG.minDISpread,
-
-      minMomentum:
-        CONFIG.minMomentum,
-
-      cooldownMinutes:
-        CONFIG.signalCooldownMinutes
-    },
-
-    runtime:
-      runtimeStats
-  };
-}
-
-// ============================================================
-// WORKER FETCH
+// WORKER
 // ============================================================
 
 export default {
 
-  async fetch(request, env, ctx) {
+  async fetch(
+    request,
+    env,
+    ctx
+  ) {
 
     const url =
       new URL(request.url);
@@ -2813,71 +2473,104 @@ export default {
     const path =
       url.pathname;
 
-    // --------------------------------------------------------
     // HOME
-    // --------------------------------------------------------
-
     if (
       path === "/" ||
       path === ""
     ) {
-
-      return htmlResponse(
-        DASHBOARD_HTML
+      return html(
+        DASHBOARD
       );
-
     }
 
-    // --------------------------------------------------------
     // HEALTH
-    // --------------------------------------------------------
-
     if (
       path === "/health"
     ) {
 
-      return jsonResponse(
-        health(env)
-      );
+      return json({
+        ok: true,
+
+        service:
+          "FOREX SIGNAL ENGINE",
+
+        version:
+          CONFIG.version,
+
+        name:
+          CONFIG.name,
+
+        primarySymbol:
+          CONFIG.primarySymbol,
+
+        telegramConfigured:
+          Boolean(
+            telegramToken(env) &&
+            telegramChatId(env)
+          ),
+
+        twelveDataConfigured:
+          Boolean(
+            twelveKey(env)
+          ),
+
+        time:
+          new Date().toISOString()
+      });
 
     }
 
-    // --------------------------------------------------------
     // STATS
-    // --------------------------------------------------------
-
     if (
       path === "/api/stats"
     ) {
 
-      return jsonResponse(
-        getStats()
-      );
+      return json({
+        ok: true,
+
+        version:
+          CONFIG.version,
+
+        config: {
+          goldMinScore:
+            CONFIG.goldMinScore,
+
+          normalMinScore:
+            CONFIG.normalMinScore,
+
+          minADX:
+            CONFIG.minADX,
+
+          minDISpread:
+            CONFIG.minDISpread,
+
+          minMomentum:
+            CONFIG.minMomentum,
+
+          cooldown:
+            CONFIG.signalCooldownMinutes
+        },
+
+        stats:
+          STATS
+      });
 
     }
 
-    // --------------------------------------------------------
     // API SIGNALS
-    // --------------------------------------------------------
-
     if (
       path === "/api/signals"
     ) {
 
       try {
 
-        const result =
-          await apiSignals(
-            env
-          );
-
-        return jsonResponse(
-          result
+        return json(
+          await apiSignals(env)
         );
 
       } catch(error) {
 
-        return jsonResponse(
+        return json(
           {
             ok: false,
             error:
@@ -2890,10 +2583,7 @@ export default {
 
     }
 
-    // --------------------------------------------------------
     // TELEGRAM TEST
-    // --------------------------------------------------------
-
     if (
       path === "/telegram-test"
     ) {
@@ -2903,18 +2593,14 @@ export default {
           env
         );
 
-      return jsonResponse(
+      return json(
         result,
         result.ok ? 200 : 500
       );
 
     }
 
-    // --------------------------------------------------------
-    // MANUAL RUN
-    // This endpoint analyzes AND sends valid signals.
-    // --------------------------------------------------------
-
+    // RUN
     if (
       path === "/run"
     ) {
@@ -2926,13 +2612,13 @@ export default {
             env
           );
 
-        return jsonResponse(
+        return json(
           result
         );
 
       } catch(error) {
 
-        return jsonResponse(
+        return json(
           {
             ok: false,
             error:
@@ -2945,22 +2631,10 @@ export default {
 
     }
 
-    // --------------------------------------------------------
-    // 404
-    // --------------------------------------------------------
-
-    return jsonResponse(
+    return json(
       {
         ok: false,
-        error: "Not Found",
-        available: [
-          "/",
-          "/health",
-          "/api/signals",
-          "/api/stats",
-          "/run",
-          "/telegram-test"
-        ]
+        error: "Not Found"
       },
       404
     );
