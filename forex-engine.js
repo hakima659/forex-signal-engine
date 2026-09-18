@@ -1,5 +1,5 @@
 // ============================================================
-// FOREX SIGNAL ENGINE V6.2
+// FOREX SIGNAL ENGINE V6.3
 // GOLD PRIORITY — XAU/USD
 // Cloudflare Worker + Twelve Data + Telegram
 //
@@ -7,11 +7,16 @@
 // - 15M
 // - 1H
 //
-// V6.2 NEWS ENGINE:
+// V6.3 NEWS ENGINE:
 // - Robust USD detection
 // - Robust High Impact detection
 // - ISO timestamp handling
 // - News feed diagnostics
+// - HTTP status diagnostics
+// - Fetch duration diagnostics
+// - Content-Type diagnostics
+// - JSON parse diagnostics
+// - XML fallback parser
 // - Raw event count
 // - USD event count
 // - High-impact USD count
@@ -55,10 +60,13 @@ const CONFIG = {
 
   NEWS_ALERT_BEFORE_MINUTES: 30,
 
-  NEWS_FETCH_TIMEOUT_MS: 10000,
+  NEWS_FETCH_TIMEOUT_MS: 12000,
 
   NEWS_FEED_URL:
     "https://nfs.faireconomy.media/ff_calendar_thisweek.json",
+
+  NEWS_FEED_FALLBACK_URL:
+    "https://nfs.faireconomy.media/ff_calendar_thisweek.xml",
 
   // If the live news feed fails, block new signals.
   NEWS_FAIL_CLOSED: true,
@@ -192,7 +200,7 @@ export default {
               "ok",
 
             engine:
-              "Hakim Gold Signal Engine V6.2",
+              "Hakim Gold Signal Engine V6.3",
 
             timestamp:
               new Date().toISOString(),
@@ -200,11 +208,23 @@ export default {
             currency:
               CONFIG.NEWS_CURRENCY,
 
+            feedUrl:
+              news.feedUrl || null,
+
             feedStatus:
               news.feedStatus || "unknown",
 
             feedError:
               news.feedError || null,
+
+            httpStatus:
+              news.httpStatus ?? null,
+
+            fetchTimeMs:
+              news.fetchTimeMs ?? 0,
+
+            contentType:
+              news.contentType || null,
 
             rawEvents:
               news.rawEvents ?? 0,
@@ -241,7 +261,7 @@ export default {
               "error",
 
             engine:
-              "Hakim Gold Signal Engine V6.2",
+              "Hakim Gold Signal Engine V6.3",
 
             message:
               String(error)
@@ -265,7 +285,7 @@ export default {
             "ok",
 
           engine:
-            "Hakim Gold Signal Engine V6.2",
+            "Hakim Gold Signal Engine V6.3",
 
           symbol:
             CONFIG.SYMBOL,
@@ -275,6 +295,12 @@ export default {
 
           newsFailClosed:
             CONFIG.NEWS_FAIL_CLOSED,
+
+          newsFeedUrl:
+            CONFIG.NEWS_FEED_URL,
+
+          newsFallbackUrl:
+            CONFIG.NEWS_FEED_FALLBACK_URL,
 
           timestamp:
             new Date().toISOString()
@@ -291,7 +317,10 @@ export default {
       {
         headers: {
           "content-type":
-            "text/html; charset=UTF-8"
+            "text/html; charset=UTF-8",
+
+          "cache-control":
+            "no-store"
         }
       }
     );
@@ -404,7 +433,7 @@ async function buildGoldSignal(env) {
         "ok",
 
       engine:
-        "Hakim Gold Signal Engine V6.2",
+        "Hakim Gold Signal Engine V6.3",
 
       symbol:
         CONFIG.SYMBOL,
@@ -1493,7 +1522,6 @@ async function buildGoldSignal(env) {
         response.score
       ].join("|");
 
-    // Prevent the same signal from being sent every 30 seconds.
     if (
       signalKey !== memoryLastSignalKey
     ) {
@@ -1515,7 +1543,7 @@ async function buildGoldSignal(env) {
 
 
 // ============================================================
-// LIVE NEWS ENGINE V6.2
+// LIVE NEWS ENGINE V6.3
 // ============================================================
 
 async function getLiveNews(
@@ -1536,6 +1564,18 @@ async function getLiveNews(
         "disabled",
 
       feedError:
+        null,
+
+      feedUrl:
+        null,
+
+      httpStatus:
+        null,
+
+      fetchTimeMs:
+        0,
+
+      contentType:
         null,
 
       rawEvents:
@@ -1585,224 +1625,708 @@ async function getLiveNews(
     cached.feedStatus =
       "connected-cache";
 
+    cached.feedError =
+      null;
+
+    cached.feedUrl =
+      memoryNewsDiagnostics?.feedUrl ||
+      null;
+
+    cached.httpStatus =
+      memoryNewsDiagnostics?.httpStatus ??
+      200;
+
+    cached.fetchTimeMs =
+      memoryNewsDiagnostics?.fetchTimeMs ??
+      0;
+
+    cached.contentType =
+      memoryNewsDiagnostics?.contentType ||
+      null;
+
     cached.rawEvents =
-      memoryNewsDiagnostics?.rawEvents ?? 0;
+      memoryNewsDiagnostics?.rawEvents ??
+      0;
 
     cached.usdEvents =
-      memoryNewsDiagnostics?.usdEvents ?? 0;
+      memoryNewsDiagnostics?.usdEvents ??
+      0;
 
     cached.highImpactUsdEvents =
-      memoryNewsDiagnostics?.highImpactUsdEvents ?? 0;
+      memoryNewsDiagnostics?.highImpactUsdEvents ??
+      0;
 
     return cached;
   }
 
-  try {
+  const feedUrls = [
 
-    const controller =
-      new AbortController();
+    CONFIG.NEWS_FEED_URL,
 
-    const timeout =
-      setTimeout(
-        () =>
-          controller.abort(),
-        CONFIG.NEWS_FETCH_TIMEOUT_MS
-      );
+    CONFIG.NEWS_FEED_FALLBACK_URL
 
-    const response =
-      await fetch(
-        CONFIG.NEWS_FEED_URL,
-        {
-          method:
-            "GET",
+  ];
 
-          headers: {
-            "User-Agent":
-              "HakimGoldSignalEngine/6.2"
+  let lastError =
+    "Unknown news feed error";
+
+  let lastStatus =
+    null;
+
+  let lastUrl =
+    null;
+
+  let lastFetchTime =
+    0;
+
+  let lastContentType =
+    null;
+
+  // ----------------------------------------------------------
+  // TRY FEEDS
+  // ----------------------------------------------------------
+
+  for (
+    const feedUrl of feedUrls
+  ) {
+
+    const started =
+      Date.now();
+
+    try {
+
+      const controller =
+        new AbortController();
+
+      const timeout =
+        setTimeout(
+          () => {
+            controller.abort();
           },
+          CONFIG.NEWS_FETCH_TIMEOUT_MS
+        );
 
-          signal:
-            controller.signal
-        }
-      );
+      let response;
 
-    clearTimeout(
-      timeout
-    );
+      try {
 
-    if (
-      !response.ok
-    ) {
+        response =
+          await fetch(
+            feedUrl,
+            {
+              method:
+                "GET",
 
-      throw new Error(
-        "News feed HTTP " +
-        response.status
-      );
-    }
+              headers: {
 
-    const data =
-      await response.json();
+                "User-Agent":
+                  "Mozilla/5.0 HakimGoldSignalEngine/6.3",
 
-    if (
-      !Array.isArray(data)
-    ) {
+                "Accept":
+                  "application/json, application/xml, text/xml, */*"
+              },
 
-      throw new Error(
-        "News feed returned invalid JSON"
-      );
-    }
+              signal:
+                controller.signal,
 
-    // --------------------------------------------------------
-    // DIAGNOSTICS
-    // --------------------------------------------------------
+              cache:
+                "no-store"
+            }
+          );
 
-    const rawEvents =
-      data.length;
+      } finally {
 
-    let usdEvents =
-      0;
-
-    let highImpactUsdEvents =
-      0;
-
-    for (
-      const item of data
-    ) {
-
-      if (
-        !item
-      ) {
-        continue;
+        clearTimeout(
+          timeout
+        );
       }
 
-      const currency =
-        normalizeNewsCurrency(
-          item.country ??
-          item.currency
-        );
+      const fetchTimeMs =
+        Date.now() -
+        started;
 
-      const impact =
-        normalizeNewsImpact(
-          item.impact
+      lastFetchTime =
+        fetchTimeMs;
+
+      lastUrl =
+        feedUrl;
+
+      lastStatus =
+        response.status;
+
+      lastContentType =
+        String(
+          response.headers.get(
+            "content-type"
+          ) || ""
         );
 
       if (
-        currency === "USD"
+        !response.ok
       ) {
 
-        usdEvents++;
+        throw new Error(
+          "HTTP " +
+          response.status +
+          " " +
+          response.statusText
+        );
+      }
+
+      const body =
+        await response.text();
+
+      if (
+        !body ||
+        body.trim().length === 0
+      ) {
+
+        throw new Error(
+          "Empty news feed response"
+        );
+      }
+
+      let data =
+        null;
+
+      // --------------------------------------------------------
+      // JSON FEED
+      // --------------------------------------------------------
+
+      if (
+        feedUrl
+          .toLowerCase()
+          .endsWith(".json")
+      ) {
+
+        try {
+
+          data =
+            JSON.parse(
+              body
+            );
+
+        } catch (jsonError) {
+
+          throw new Error(
+            "Invalid JSON: " +
+            String(
+              jsonError
+            )
+          );
+        }
+
+      } else {
+
+        // ------------------------------------------------------
+        // XML FALLBACK
+        // ------------------------------------------------------
+
+        data =
+          parseEconomicCalendarXML(
+            body
+          );
+      }
+
+      if (
+        !Array.isArray(data)
+      ) {
+
+        throw new Error(
+          "News feed returned no event array. Content-Type: " +
+          lastContentType
+        );
+      }
+
+      const rawEvents =
+        data.length;
+
+      let usdEvents =
+        0;
+
+      let highImpactUsdEvents =
+        0;
+
+      for (
+        const item of data
+      ) {
 
         if (
-          impact === "High"
+          !item
+        ) {
+          continue;
+        }
+
+        const currency =
+          normalizeNewsCurrency(
+            item.country ??
+            item.currency
+          );
+
+        const impact =
+          normalizeNewsImpact(
+            item.impact
+          );
+
+        if (
+          currency === "USD"
         ) {
 
-          highImpactUsdEvents++;
+          usdEvents++;
+
+          if (
+            impact === "High"
+          ) {
+
+            highImpactUsdEvents++;
+          }
         }
+      }
+
+      const normalized =
+        normalizeNewsEvents(
+          data
+        );
+
+      memoryNewsCache =
+        normalized;
+
+      memoryNewsCacheTime =
+        Date.now();
+
+      memoryNewsDiagnostics = {
+
+        rawEvents,
+
+        usdEvents,
+
+        highImpactUsdEvents,
+
+        feedUrl,
+
+        httpStatus:
+          response.status,
+
+        fetchTimeMs,
+
+        contentType:
+          lastContentType
+      };
+
+      const analyzed =
+        analyzeNews(
+          normalized,
+          includePast
+        );
+
+      analyzed.feedStatus =
+        "connected";
+
+      analyzed.feedError =
+        null;
+
+      analyzed.feedUrl =
+        feedUrl;
+
+      analyzed.httpStatus =
+        response.status;
+
+      analyzed.fetchTimeMs =
+        fetchTimeMs;
+
+      analyzed.contentType =
+        lastContentType;
+
+      analyzed.rawEvents =
+        rawEvents;
+
+      analyzed.usdEvents =
+        usdEvents;
+
+      analyzed.highImpactUsdEvents =
+        highImpactUsdEvents;
+
+      console.log(
+        "NEWS FEED CONNECTED:",
+        JSON.stringify({
+          feedUrl,
+
+          httpStatus:
+            response.status,
+
+          fetchTimeMs,
+
+          contentType:
+            lastContentType,
+
+          rawEvents,
+
+          usdEvents,
+
+          highImpactUsdEvents,
+
+          normalizedHighImpact:
+            normalized.length
+        })
+      );
+
+      return analyzed;
+
+    } catch (error) {
+
+      lastError =
+        String(
+          error &&
+          error.message
+            ? error.message
+            : error
+        );
+
+      console.error(
+        "NEWS FEED ATTEMPT FAILED:",
+        feedUrl,
+        lastError
+      );
+    }
+  }
+
+  // ----------------------------------------------------------
+  // ALL FEEDS FAILED
+  // ----------------------------------------------------------
+
+  const errorMessage =
+    "News feed unavailable. " +
+    "Last URL: " +
+    String(
+      lastUrl ||
+      "-"
+    ) +
+    ". HTTP: " +
+    String(
+      lastStatus ??
+      "-"
+    ) +
+    ". Fetch: " +
+    String(
+      lastFetchTime
+    ) +
+    "ms. Content-Type: " +
+    String(
+      lastContentType ||
+      "-"
+    ) +
+    ". Error: " +
+    lastError;
+
+  console.error(
+    "NEWS FEED FINAL ERROR:",
+    errorMessage
+  );
+
+  return {
+
+    enabled:
+      true,
+
+    feedStatus:
+      "error",
+
+    feedError:
+      errorMessage,
+
+    feedUrl:
+      lastUrl,
+
+    httpStatus:
+      lastStatus,
+
+    fetchTimeMs:
+      lastFetchTime,
+
+    contentType:
+      lastContentType,
+
+    rawEvents:
+      memoryNewsDiagnostics?.rawEvents ??
+      0,
+
+    usdEvents:
+      memoryNewsDiagnostics?.usdEvents ??
+      0,
+
+    highImpactUsdEvents:
+      memoryNewsDiagnostics?.highImpactUsdEvents ??
+      0,
+
+    blocked:
+      CONFIG.NEWS_FAIL_CLOSED,
+
+    blockEvent:
+      CONFIG.NEWS_FAIL_CLOSED
+        ? {
+
+            title:
+              "NEWS FEED ERROR — NEW TRADES BLOCKED",
+
+            currency:
+              "USD",
+
+            impact:
+              "High",
+
+            timestamp:
+              Date.now(),
+
+            diff:
+              0
+          }
+
+        : null,
+
+    events: [],
+
+    nextHighImpact:
+      null,
+
+    minutesToNext:
+      null
+  };
+}
+
+
+// ============================================================
+// XML FALLBACK PARSER
+// ============================================================
+
+function parseEconomicCalendarXML(
+  xml
+) {
+
+  const result = [];
+
+  if (
+    !xml ||
+    typeof xml !== "string"
+  ) {
+
+    return result;
+  }
+
+  const eventMatches =
+    xml.match(
+      /<event\b[\s\S]*?<\/event>/gi
+    ) || [];
+
+  for (
+    const block of eventMatches
+  ) {
+
+    const country =
+      xmlTagValue(
+        block,
+        "country"
+      );
+
+    const currency =
+      xmlTagValue(
+        block,
+        "currency"
+      );
+
+    const title =
+      xmlTagValue(
+        block,
+        "title"
+      ) ||
+      xmlTagValue(
+        block,
+        "event"
+      ) ||
+      "USD economic event";
+
+    const impact =
+      xmlTagValue(
+        block,
+        "impact"
+      );
+
+    const date =
+      xmlTagValue(
+        block,
+        "date"
+      );
+
+    const time =
+      xmlTagValue(
+        block,
+        "time"
+      );
+
+    const datetime =
+      xmlTagValue(
+        block,
+        "datetime"
+      );
+
+    const forecast =
+      xmlTagValue(
+        block,
+        "forecast"
+      );
+
+    const previous =
+      xmlTagValue(
+        block,
+        "previous"
+      );
+
+    const actual =
+      xmlTagValue(
+        block,
+        "actual"
+      );
+
+    let timestamp =
+      null;
+
+    const dateTime =
+      datetime ||
+      [
+        date,
+        time
+      ]
+      .filter(Boolean)
+      .join(" ");
+
+    if (
+      dateTime
+    ) {
+
+      const parsed =
+        Date.parse(
+          dateTime
+        );
+
+      if (
+        Number.isFinite(
+          parsed
+        )
+      ) {
+
+        timestamp =
+          parsed;
       }
     }
 
-    const normalized =
-      normalizeNewsEvents(
-        data
-      );
+    result.push({
 
-    memoryNewsCache =
-      normalized;
+      country:
+        country ||
+        currency ||
+        "",
 
-    memoryNewsCacheTime =
-      now;
+      currency:
+        currency ||
+        country ||
+        "",
 
-    memoryNewsDiagnostics = {
+      title,
 
-      rawEvents,
+      impact,
 
-      usdEvents,
+      date:
+        dateTime,
 
-      highImpactUsdEvents
-    };
+      timestamp,
 
-    const analyzed =
-      analyzeNews(
-        normalized,
-        includePast
-      );
+      forecast,
 
-    analyzed.feedStatus =
-      "connected";
+      previous,
 
-    analyzed.feedError =
-      null;
+      actual
+    });
+  }
 
-    analyzed.rawEvents =
-      rawEvents;
+  return result;
+}
 
-    analyzed.usdEvents =
-      usdEvents;
 
-    analyzed.highImpactUsdEvents =
-      highImpactUsdEvents;
+// ============================================================
+// XML TAG VALUE
+// ============================================================
 
-    return analyzed;
+function xmlTagValue(
+  xml,
+  tag
+) {
 
-  } catch (error) {
-
-    console.error(
-      "NEWS FEED ERROR:",
-      error
+  const regex =
+    new RegExp(
+      "<" +
+      tag +
+      "\\b[^>]*>([\\s\\S]*?)<\\/" +
+      tag +
+      ">",
+      "i"
     );
 
-    return {
+  const match =
+    xml.match(
+      regex
+    );
 
-      enabled:
-        true,
+  if (
+    !match
+  ) {
 
-      feedStatus:
-        "error",
-
-      feedError:
-        String(error),
-
-      rawEvents:
-        memoryNewsDiagnostics?.rawEvents ?? 0,
-
-      usdEvents:
-        memoryNewsDiagnostics?.usdEvents ?? 0,
-
-      highImpactUsdEvents:
-        memoryNewsDiagnostics?.highImpactUsdEvents ?? 0,
-
-      blocked:
-        CONFIG.NEWS_FAIL_CLOSED,
-
-      blockEvent:
-        CONFIG.NEWS_FAIL_CLOSED
-          ? {
-              title:
-                "NEWS FEED ERROR — NEW TRADES BLOCKED",
-
-              currency:
-                "USD",
-
-              impact:
-                "High",
-
-              timestamp:
-                Date.now(),
-
-              diff:
-                0
-            }
-          : null,
-
-      events: [],
-
-      nextHighImpact:
-        null,
-
-      minutesToNext:
-        null
-    };
+    return "";
   }
+
+  return decodeXmlEntities(
+    String(
+      match[1]
+    ).trim()
+  );
+}
+
+
+// ============================================================
+// XML ENTITIES
+// ============================================================
+
+function decodeXmlEntities(
+  value
+) {
+
+  return String(
+    value ||
+    ""
+  )
+
+  .replace(
+    /&amp;/gi,
+    "&"
+  )
+
+  .replace(
+    /&lt;/gi,
+    "<"
+  )
+
+  .replace(
+    /&gt;/gi,
+    ">"
+  )
+
+  .replace(
+    /&quot;/gi,
+    '"'
+  )
+
+  .replace(
+    /&#39;/gi,
+    "'"
+  );
 }
 
 
@@ -1947,7 +2471,8 @@ function normalizeNewsCurrency(
 
   const s =
     String(
-      value ?? ""
+      value ??
+      ""
     )
     .trim()
     .toUpperCase();
@@ -1977,7 +2502,8 @@ function normalizeNewsImpact(
 
   const s =
     String(
-      value ?? ""
+      value ??
+      ""
     )
     .trim()
     .toLowerCase();
@@ -2024,10 +2550,11 @@ function parseNewsTimestamp(
 
   if (
     item.timestamp !==
-    undefined &&
+      undefined &&
     item.timestamp !==
-    null &&
-    item.timestamp !== ""
+      null &&
+    item.timestamp !==
+      ""
   ) {
 
     const numeric =
@@ -2041,7 +2568,8 @@ function parseNewsTimestamp(
       )
     ) {
 
-      return numeric < 10000000000
+      return numeric <
+        10000000000
         ? numeric * 1000
         : numeric;
     }
@@ -2054,6 +2582,8 @@ function parseNewsTimestamp(
     item.datetime,
 
     item.datetime_utc,
+
+    item.datetimeUtc,
 
     item.time
 
@@ -2396,7 +2926,8 @@ function buildNewsTelegramMessage(
     Math.max(
       0,
       Math.round(
-        diff / 60000
+        diff /
+        60000
       )
     );
 
@@ -2480,7 +3011,7 @@ function buildSignalTelegramMessage(
 
   return (
 
-    "💎 HAKIM GOLD SIGNALS V6.2\n\n" +
+    "💎 HAKIM GOLD SIGNALS V6.3\n\n" +
 
     "🥇 XAUUSD\n" +
 
@@ -2671,8 +3202,11 @@ async function getTimeSeries(
       {
         headers: {
           "User-Agent":
-            "HakimGoldSignalEngine/6.2"
-        }
+            "HakimGoldSignalEngine/6.3"
+        },
+
+        cache:
+          "no-store"
       }
     );
 
@@ -2738,9 +3272,13 @@ function calculateEMA(
 
   let ema =
     chronological
-      .slice(0, period)
+      .slice(
+        0,
+        period
+      )
       .reduce(
-        (a, b) => a + b,
+        (a, b) =>
+          a + b,
         0
       ) /
     period;
@@ -2753,7 +3291,8 @@ function calculateEMA(
 
     ema =
       chronological[i] * k +
-      ema * (1 - k);
+      ema *
+        (1 - k);
   }
 
   return ema;
@@ -2805,10 +3344,12 @@ function calculateRSI(
   }
 
   let avgGain =
-    gains / period;
+    gains /
+    period;
 
   let avgLoss =
-    losses / period;
+    losses /
+    period;
 
   for (
     let i = period + 1;
@@ -2834,15 +3375,19 @@ function calculateRSI(
 
     avgGain =
       (
-        avgGain * (period - 1) +
+        avgGain *
+          (period - 1) +
         gain
-      ) / period;
+      ) /
+      period;
 
     avgLoss =
       (
-        avgLoss * (period - 1) +
+        avgLoss *
+          (period - 1) +
         loss
-      ) / period;
+      ) /
+      period;
   }
 
   if (
@@ -2852,11 +3397,13 @@ function calculateRSI(
   }
 
   const rs =
-    avgGain / avgLoss;
+    avgGain /
+    avgLoss;
 
   return (
     100 -
-    100 / (1 + rs)
+    100 /
+      (1 + rs)
   );
 }
 
@@ -2933,22 +3480,29 @@ function calculateATR(
     tr.push(
       Math.max(
         high - low,
+
         Math.abs(
-          high - prevClose
+          high -
+          prevClose
         ),
+
         Math.abs(
-          low - prevClose
+          low -
+          prevClose
         )
       )
     );
   }
 
   const recent =
-    tr.slice(-period);
+    tr.slice(
+      -period
+    );
 
   return (
     recent.reduce(
-      (a, b) => a + b,
+      (a, b) =>
+        a + b,
       0
     ) /
     recent.length
@@ -2988,47 +3542,67 @@ function calculateADX(
   ) {
 
     const high =
-      Number(c[i].high);
+      Number(
+        c[i].high
+      );
 
     const low =
-      Number(c[i].low);
+      Number(
+        c[i].low
+      );
 
     const prevHigh =
-      Number(c[i - 1].high);
+      Number(
+        c[i - 1].high
+      );
 
     const prevLow =
-      Number(c[i - 1].low);
+      Number(
+        c[i - 1].low
+      );
 
     const prevClose =
-      Number(c[i - 1].close);
+      Number(
+        c[i - 1].close
+      );
 
     const tr =
       Math.max(
         high - low,
+
         Math.abs(
-          high - prevClose
+          high -
+          prevClose
         ),
+
         Math.abs(
-          low - prevClose
+          low -
+          prevClose
         )
       );
 
     const up =
-      high - prevHigh;
+      high -
+      prevHigh;
 
     const down =
-      prevLow - low;
+      prevLow -
+      low;
 
-    trs.push(tr);
+    trs.push(
+      tr
+    );
 
     plusDM.push(
-      up > down && up > 0
+      up > down &&
+      up > 0
         ? up
         : 0
     );
 
     minusDM.push(
-      down > up && down > 0
+      down > up &&
+      down > 0
         ? down
         : 0
     );
@@ -3037,13 +3611,15 @@ function calculateADX(
   const start =
     Math.max(
       0,
-      trs.length - period * 2
+      trs.length -
+        period * 2
     );
 
   const dxValues = [];
 
   for (
-    let i = start + period;
+    let i =
+      start + period;
     i < trs.length;
     i++
   ) {
@@ -3068,7 +3644,8 @@ function calculateADX(
 
     const trSum =
       trSlice.reduce(
-        (a, b) => a + b,
+        (a, b) =>
+          a + b,
         0
       );
 
@@ -3081,7 +3658,8 @@ function calculateADX(
     const plus =
       100 *
       plusSlice.reduce(
-        (a, b) => a + b,
+        (a, b) =>
+          a + b,
         0
       ) /
       trSum;
@@ -3089,7 +3667,8 @@ function calculateADX(
     const minus =
       100 *
       minusSlice.reduce(
-        (a, b) => a + b,
+        (a, b) =>
+          a + b,
         0
       ) /
       trSum;
@@ -3120,9 +3699,12 @@ function calculateADX(
 
   return (
     dxValues
-      .slice(-period)
+      .slice(
+        -period
+      )
       .reduce(
-        (a, b) => a + b,
+        (a, b) =>
+          a + b,
         0
       ) /
     Math.min(
@@ -3162,7 +3744,10 @@ function calculateMomentum(
 
   return (
     (
-      (current - old) /
+      (
+        current -
+        old
+      ) /
       old
     ) * 100
   );
@@ -3230,16 +3815,28 @@ function detectStructure(
   }
 
   const recentHighs =
-    highs.slice(0, 20);
+    highs.slice(
+      0,
+      20
+    );
 
   const recentLows =
-    lows.slice(0, 20);
+    lows.slice(
+      0,
+      20
+    );
 
   const previousHighs =
-    highs.slice(10, 30);
+    highs.slice(
+      10,
+      30
+    );
 
   const previousLows =
-    lows.slice(10, 30);
+    lows.slice(
+      10,
+      30
+    );
 
   const recentHigh =
     Math.max(
@@ -3262,16 +3859,20 @@ function detectStructure(
     );
 
   if (
-    recentHigh > previousHigh &&
-    recentLow > previousLow
+    recentHigh >
+      previousHigh &&
+    recentLow >
+      previousLow
   ) {
 
     return "BULLISH";
   }
 
   if (
-    recentHigh < previousHigh &&
-    recentLow < previousLow
+    recentHigh <
+      previousHigh &&
+    recentLow <
+      previousLow
   ) {
 
     return "BEARISH";
@@ -3301,13 +3902,18 @@ function detectBOS(
     );
 
   const previous =
-    candles.slice(5, 20);
+    candles.slice(
+      5,
+      20
+    );
 
   const high =
     Math.max(
       ...previous.map(
         x =>
-          Number(x.high)
+          Number(
+            x.high
+          )
       )
     );
 
@@ -3315,7 +3921,9 @@ function detectBOS(
     Math.min(
       ...previous.map(
         x =>
-          Number(x.low)
+          Number(
+            x.low
+          )
       )
     );
 
@@ -3357,16 +3965,24 @@ function detectCHoCH(
     );
 
   const recent =
-    candles.slice(0, 10);
+    candles.slice(
+      0,
+      10
+    );
 
   const older =
-    candles.slice(10, 30);
+    candles.slice(
+      10,
+      30
+    );
 
   const recentHigh =
     Math.max(
       ...recent.map(
         x =>
-          Number(x.high)
+          Number(
+            x.high
+          )
       )
     );
 
@@ -3374,7 +3990,9 @@ function detectCHoCH(
     Math.min(
       ...recent.map(
         x =>
-          Number(x.low)
+          Number(
+            x.low
+          )
       )
     );
 
@@ -3382,7 +4000,9 @@ function detectCHoCH(
     Math.max(
       ...older.map(
         x =>
-          Number(x.high)
+          Number(
+            x.high
+          )
       )
     );
 
@@ -3390,7 +4010,9 @@ function detectCHoCH(
     Math.min(
       ...older.map(
         x =>
-          Number(x.low)
+          Number(
+            x.low
+          )
       )
     );
 
@@ -3432,13 +4054,18 @@ function detectLiquiditySweep(
     candles[0];
 
   const previous =
-    candles.slice(2, 12);
+    candles.slice(
+      2,
+      12
+    );
 
   const high =
     Math.max(
       ...previous.map(
         x =>
-          Number(x.high)
+          Number(
+            x.high
+          )
       )
     );
 
@@ -3446,18 +4073,26 @@ function detectLiquiditySweep(
     Math.min(
       ...previous.map(
         x =>
-          Number(x.low)
+          Number(
+            x.low
+          )
       )
     );
 
   const currentHigh =
-    Number(current.high);
+    Number(
+      current.high
+    );
 
   const currentLow =
-    Number(current.low);
+    Number(
+      current.low
+    );
 
   const currentClose =
-    Number(current.close);
+    Number(
+      current.close
+    );
 
   if (
     currentLow < low &&
@@ -3499,13 +4134,18 @@ function detectBreakout(
     );
 
   const previous =
-    candles.slice(3, 20);
+    candles.slice(
+      3,
+      20
+    );
 
   const high =
     Math.max(
       ...previous.map(
         x =>
-          Number(x.high)
+          Number(
+            x.high
+          )
       )
     );
 
@@ -3513,7 +4153,9 @@ function detectBreakout(
     Math.min(
       ...previous.map(
         x =>
-          Number(x.low)
+          Number(
+            x.low
+          )
       )
     );
 
@@ -3555,13 +4197,18 @@ function detectRetest(
     );
 
   const previous =
-    candles.slice(3, 15);
+    candles.slice(
+      3,
+      15
+    );
 
   const high =
     Math.max(
       ...previous.map(
         x =>
-          Number(x.high)
+          Number(
+            x.high
+          )
       )
     );
 
@@ -3569,12 +4216,15 @@ function detectRetest(
     Math.min(
       ...previous.map(
         x =>
-          Number(x.low)
+          Number(
+            x.low
+          )
       )
     );
 
   const range =
-    high - low;
+    high -
+    low;
 
   if (
     range <= 0
@@ -3584,15 +4234,19 @@ function detectRetest(
 
   const nearLow =
     Math.abs(
-      current - low
+      current -
+      low
     ) <
-    range * 0.18;
+    range *
+      0.18;
 
   const nearHigh =
     Math.abs(
-      current - high
+      current -
+      high
     ) <
-    range * 0.18;
+    range *
+      0.18;
 
   if (
     nearLow &&
@@ -3641,14 +4295,17 @@ function detectPullback(
 
   const distance =
     Math.abs(
-      current - ema20
+      current -
+      ema20
     );
 
   if (
     distance <=
     Math.abs(
-      previous - current
-    ) * 1.5
+      previous -
+      current
+    ) *
+    1.5
   ) {
 
     if (
@@ -3688,13 +4345,18 @@ function buildTradePlan(
   }
 
   const recent =
-    candles.slice(0, 20);
+    candles.slice(
+      0,
+      20
+    );
 
   const recentHigh =
     Math.max(
       ...recent.map(
         x =>
-          Number(x.high)
+          Number(
+            x.high
+          )
       )
     );
 
@@ -3702,7 +4364,9 @@ function buildTradePlan(
     Math.min(
       ...recent.map(
         x =>
-          Number(x.low)
+          Number(
+            x.low
+          )
       )
     );
 
@@ -3726,9 +4390,12 @@ function buildTradePlan(
 
     entry =
       Math.min(
-        price - entryOffset,
+        price -
+          entryOffset,
+
         recentLow +
-          atr * 0.15
+          atr *
+          0.15
       );
 
     stopLoss =
@@ -3738,31 +4405,39 @@ function buildTradePlan(
           CONFIG.ATR_SL_MULTIPLIER,
 
         recentLow -
-          atr * 0.20
+          atr *
+          0.20
       );
 
     const risk =
-      entry - stopLoss;
+      entry -
+      stopLoss;
 
     tp1 =
       entry +
-      risk * 1.50;
+      risk *
+      1.50;
 
     tp2 =
       entry +
-      risk * 2.20;
+      risk *
+      2.20;
 
     tp3 =
       entry +
-      risk * 3.00;
+      risk *
+      3.00;
 
   } else {
 
     entry =
       Math.max(
-        price + entryOffset,
+        price +
+          entryOffset,
+
         recentHigh -
-          atr * 0.15
+          atr *
+          0.15
       );
 
     stopLoss =
@@ -3772,23 +4447,28 @@ function buildTradePlan(
           CONFIG.ATR_SL_MULTIPLIER,
 
         recentHigh +
-          atr * 0.20
+          atr *
+          0.20
       );
 
     const risk =
-      stopLoss - entry;
+      stopLoss -
+      entry;
 
     tp1 =
       entry -
-      risk * 1.50;
+      risk *
+      1.50;
 
     tp2 =
       entry -
-      risk * 2.20;
+      risk *
+      2.20;
 
     tp3 =
       entry -
-      risk * 3.00;
+      risk *
+      3.00;
   }
 
   return {
@@ -3826,18 +4506,22 @@ function calculateRR(
   ) {
 
     risk =
-      entry - stopLoss;
+      entry -
+      stopLoss;
 
     reward =
-      tp - entry;
+      tp -
+      entry;
 
   } else {
 
     risk =
-      stopLoss - entry;
+      stopLoss -
+      entry;
 
     reward =
-      entry - tp;
+      entry -
+      tp;
   }
 
   if (
@@ -3846,7 +4530,10 @@ function calculateRR(
     return 0;
   }
 
-  return reward / risk;
+  return (
+    reward /
+    risk
+  );
 }
 
 
@@ -3864,7 +4551,7 @@ function buildFullResponse(
       "ok",
 
     engine:
-      "Hakim Gold Signal Engine V6.2",
+      "Hakim Gold Signal Engine V6.3",
 
     timestamp:
       new Date().toISOString(),
@@ -4048,13 +4735,18 @@ function roundPrice(
 ) {
 
   if (
-    !Number.isFinite(value)
+    !Number.isFinite(
+      value
+    )
   ) {
+
     return null;
   }
 
   return Number(
-    value.toFixed(2)
+    value.toFixed(
+      2
+    )
   );
 }
 
@@ -4064,13 +4756,18 @@ function roundNumber(
 ) {
 
   if (
-    !Number.isFinite(value)
+    !Number.isFinite(
+      value
+    )
   ) {
+
     return 0;
   }
 
   return Number(
-    value.toFixed(4)
+    value.toFixed(
+      4
+    )
   );
 }
 
@@ -4084,8 +4781,10 @@ function cleanNewsValue(
 ) {
 
   if (
-    value === undefined ||
-    value === null
+    value ===
+      undefined ||
+    value ===
+      null
   ) {
 
     return "";
@@ -4118,7 +4817,7 @@ content="width=device-width,initial-scale=1">
 content="#12163a">
 
 <title>
-FX · موتور سیگنال فارکس V6.2
+FX · موتور سیگنال فارکس V6.3
 </title>
 
 <style>
@@ -4223,6 +4922,15 @@ button {
   margin-top:10px;
   font-size:13px;
   opacity:.75;
+  word-break:break-word;
+}
+
+.error {
+  color:#ffb4b4;
+}
+
+.ok {
+  color:#a8ffbf;
 }
 
 </style>
@@ -4236,7 +4944,7 @@ button {
 <div class="card">
 
 <h1>
-FX · موتور سیگنال فارکس V6.2
+FX · موتور سیگنال فارکس V6.3
 </h1>
 
 <div>
@@ -4469,7 +5177,11 @@ async function loadSignal() {
     const response =
       await fetch(
         "/api/signals?ts=" +
-        Date.now()
+        Date.now(),
+        {
+          cache:
+            "no-store"
+        }
       );
 
     const data =
@@ -4640,12 +5352,48 @@ function renderNews(
     box.innerHTML =
       "🛑 <b>فید خبر در دسترس نیست</b><br>" +
       "برای احتیاط، ورود جدید موقتاً متوقف شده است." +
-      "<div class='diagnostic'>" +
+
+      "<div class='diagnostic error'>" +
+
       "Feed Status: " +
       (
         news.feedStatus ||
         "error"
       ) +
+
+      "<br>" +
+
+      "HTTP: " +
+      (
+        news.httpStatus ??
+        "-"
+      ) +
+
+      "<br>" +
+
+      "Fetch Time: " +
+      (
+        news.fetchTimeMs ??
+        0
+      ) +
+      " ms" +
+
+      "<br>" +
+
+      "Content-Type: " +
+      (
+        news.contentType ||
+        "-"
+      ) +
+
+      "<br>" +
+
+      "Error: " +
+      (
+        news.feedError ||
+        "-"
+      ) +
+
       "</div>";
 
     return;
@@ -4664,23 +5412,31 @@ function renderNews(
 
     box.innerHTML =
       "🛑 <b>پنجره خبر فعال است</b><br>" +
+
       "🇺🇸 USD — HIGH IMPACT<br><br>" +
+
       "📌 " +
       (
         event
           ? event.title
           : "خبر مهم اقتصادی"
       ) +
+
       "<br><br>" +
+
       "⏳ ورود جدید موقتاً متوقف است.";
 
   } else {
 
     box.innerHTML =
       "🟢 فیلتر خبر فعال است." +
+
       "<br>" +
+
       "🇺🇸 USD — High Impact" +
+
       "<br>" +
+
       (
         news.nextHighImpact
           ? "📌 خبر بعدی: " +
@@ -4699,29 +5455,54 @@ function renderNews(
 
   box.innerHTML +=
     "<div class='diagnostic'>" +
+
     "Feed: " +
     (
       news.feedStatus ||
       "-"
     ) +
+
     "<br>" +
+
+    "HTTP: " +
+    (
+      news.httpStatus ??
+      "-"
+    ) +
+
+    "<br>" +
+
+    "Fetch Time: " +
+    (
+      news.fetchTimeMs ??
+      0
+    ) +
+    " ms" +
+
+    "<br>" +
+
     "Raw Events: " +
     (
       news.rawEvents ??
       0
     ) +
+
     "<br>" +
+
     "USD Events: " +
     (
       news.usdEvents ??
       0
     ) +
+
     "<br>" +
+
     "High Impact USD: " +
     (
       news.highImpactUsdEvents ??
       0
     ) +
+
     "</div>";
 
   // ----------------------------------------------------------
@@ -4853,4 +5634,4 @@ function corsHeaders() {
     "Access-Control-Allow-Headers":
       "Content-Type"
   };
-    }
+      }
