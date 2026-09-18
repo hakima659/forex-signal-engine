@@ -1,12 +1,12 @@
 //+------------------------------------------------------------------+
-//| Hakim Gold Signals EA V5.6                                      |
+//| Hakim Gold Signals EA V5.7                                      |
 //| Cloudflare Worker -> MT5                                        |
 //| PRIMARY: XAUUSD                                                  |
 //| DEMO FIRST                                                        |
 //+------------------------------------------------------------------+
 #property strict
-#property version   "5.6"
-#property description "Hakim Gold Signals - Worker V5.6 Gold Priority"
+#property version   "5.7"
+#property description "Hakim Gold Signals - Worker V5.7 Gold Priority"
 
 #include <Trade/Trade.mqh>
 
@@ -21,7 +21,7 @@ input string WorkerURL =
 
 input double Lots = 0.01;
 
-input ulong MagicNumber = 560015;
+input ulong MagicNumber = 570015;
 
 input int PollSeconds = 30;
 
@@ -32,31 +32,37 @@ input int DeviationPoints = 30;
 // فقط طلا
 input bool GoldOnly = true;
 
-// اجرای واقعی سفارش
-// برای شروع روی Demo مقدار true باشد.
-// روی حساب واقعی قبل از تست کامل تغییر نده.
+// اجرای سفارش
+// برای شروع فقط روی Demo استفاده شود.
 input bool EnableTrading = true;
 
-// حداقل امتیاز مورد قبول
-input int MinimumScore = 70;
+// حداقل امتیاز
+input int MinimumScore = 80;
 
-// حداکثر سفارش/پوزیشن متعلق به این EA
+// حداکثر سفارش/پوزیشن متعلق به EA
 input int MaxGoldOrders = 1;
 
-// فاصله مجاز Entry از قیمت فعلی برای جلوگیری از سفارش نامعتبر
+// حداکثر فاصله Entry از قیمت فعلی بر حسب ATR
 input double MaxEntryDistanceATR = 2.0;
+
+// حداقل Risk/Reward
+input double MinimumRiskReward = 1.30;
 
 // استفاده از TP3 به عنوان TP نهایی
 input bool UseTP3 = true;
 
-// ارسال پیام‌های ساده به Telegram
+// پیام تلگرام
 input bool TelegramMessages = true;
 
-// اگر Worker خودش پیام تلگرام می‌فرستد، این EA
-// فقط پیام‌های مربوط به معامله را ارسال می‌کند.
 input string TelegramBotToken = "";
 
 input string TelegramChatID = "";
+
+// اعتبار سیگنال بر حسب ثانیه
+input int SignalMaxAgeSeconds = 900;
+
+// حداقل فاصله مجاز از بازار
+input double MinimumEntryDistancePoints = 20;
 
 //==================================================================
 // GLOBALS
@@ -70,9 +76,6 @@ double LastEntry = 0.0;
 
 ulong LastKnownOrder = 0;
 
-bool InitializedMessageSent = false;
-
-
 //==================================================================
 // STRING HELPERS
 //==================================================================
@@ -84,13 +87,11 @@ string TrimString(string s)
    return s;
 }
 
-
 string Upper(string s)
 {
    StringToUpper(s);
    return s;
 }
-
 
 //==================================================================
 // JSON NUMBER EXTRACTION
@@ -156,13 +157,16 @@ bool GetJsonNumber(
       return false;
 
    string numberText =
-      StringSubstr(json,start,end-start);
+      StringSubstr(
+         json,
+         start,
+         end-start
+      );
 
    value = StringToDouble(numberText);
 
    return MathIsValidNumber(value);
 }
-
 
 //==================================================================
 // JSON STRING EXTRACTION
@@ -206,9 +210,8 @@ bool GetJsonString(
    return true;
 }
 
-
 //==================================================================
-// SYMBOL DETECTION
+// SYMBOL
 //==================================================================
 
 bool IsGoldSymbol()
@@ -228,9 +231,8 @@ bool IsGoldSymbol()
    return false;
 }
 
-
 //==================================================================
-// TELEGRAM
+// URL ENCODE
 //==================================================================
 
 string UrlEncode(string text)
@@ -278,6 +280,9 @@ string UrlEncode(string text)
    return result;
 }
 
+//==================================================================
+// TELEGRAM
+//==================================================================
 
 void SendTelegramMessage(string message)
 {
@@ -344,7 +349,6 @@ void SendTelegramMessage(string message)
    }
 }
 
-
 //==================================================================
 // WORKER REQUEST
 //==================================================================
@@ -374,11 +378,9 @@ bool GetWorkerSignals(string &response)
 
    if(code == -1)
    {
-      int error = GetLastError();
-
       Print(
          "Worker WebRequest failed. Error=",
-         error
+         GetLastError()
       );
 
       return false;
@@ -413,7 +415,6 @@ bool GetWorkerSignals(string &response)
 
    return true;
 }
-
 
 //==================================================================
 // FIND GOLD OBJECT
@@ -472,16 +473,14 @@ bool ExtractGoldObject(
    return true;
 }
 
-
 //==================================================================
-// TRADE COUNT
+// COUNT OUR ORDERS
 //==================================================================
 
 int CountOurGoldOrders()
 {
    int count = 0;
 
-   // Pending orders
    for(
       int i = OrdersTotal() - 1;
       i >= 0;
@@ -514,7 +513,6 @@ int CountOurGoldOrders()
       count++;
    }
 
-   // Open positions
    for(
       int i = PositionsTotal() - 1;
       i >= 0;
@@ -550,9 +548,8 @@ int CountOurGoldOrders()
    return count;
 }
 
-
 //==================================================================
-// CHECK DUPLICATE ENTRY
+// DUPLICATE CHECK
 //==================================================================
 
 bool HasSimilarPendingOrder(
@@ -621,11 +618,14 @@ bool HasSimilarPendingOrder(
       if(!typeOK)
          continue;
 
-      double tolerance =
+      double point =
          SymbolInfoDouble(
             _Symbol,
             SYMBOL_POINT
-         ) * 20.0;
+         );
+
+      double tolerance =
+         point * 20.0;
 
       if(
          MathAbs(
@@ -640,9 +640,8 @@ bool HasSimilarPendingOrder(
    return false;
 }
 
-
 //==================================================================
-// PRICE NORMALIZATION
+// NORMALIZE PRICE
 //==================================================================
 
 double NormalizePrice(double price)
@@ -659,26 +658,30 @@ double NormalizePrice(double price)
    );
 }
 
-
 //==================================================================
-// VALIDATE PENDING PRICE
+// VALIDATE TRADE PLAN
 //==================================================================
 
-bool ValidatePendingPrice(
+bool ValidateTradePlan(
    string signal,
-   double entry
+   double entry,
+   double sl,
+   double tp
 )
 {
    MqlTick tick;
 
-   if(!SymbolInfoTick(_Symbol,tick))
-      return false;
-
-   int stopsLevel =
-      (int)SymbolInfoInteger(
-         _Symbol,
-         SYMBOL_TRADE_STOPS_LEVEL
+   if(!SymbolInfoTick(
+      _Symbol,
+      tick
+   ))
+   {
+      Print(
+         "Cannot read current market tick."
       );
+
+      return false;
+   }
 
    double point =
       SymbolInfoDouble(
@@ -686,15 +689,37 @@ bool ValidatePendingPrice(
          SYMBOL_POINT
       );
 
-   double minDistance =
+   int stopsLevel =
+      (int)SymbolInfoInteger(
+         _Symbol,
+         SYMBOL_TRADE_STOPS_LEVEL
+      );
+
+   double brokerMinDistance =
       stopsLevel * point;
+
+   double configuredMinDistance =
+      MinimumEntryDistancePoints * point;
+
+   double minDistance =
+      MathMax(
+         brokerMinDistance,
+         configuredMinDistance
+      );
+
+   // -------------------------------------------------------------
+   // BUY LIMIT
+   // -------------------------------------------------------------
 
    if(signal == "BUY LIMIT")
    {
       if(entry >= tick.ask)
       {
          Print(
-            "BUY LIMIT invalid: entry is not below Ask."
+            "BUY LIMIT rejected: Entry ",
+            entry,
+            " >= Ask ",
+            tick.ask
          );
 
          return false;
@@ -706,19 +731,44 @@ bool ValidatePendingPrice(
       )
       {
          Print(
-            "BUY LIMIT too close to market."
+            "BUY LIMIT rejected: Entry too close to market."
+         );
+
+         return false;
+      }
+
+      if(sl >= entry)
+      {
+         Print(
+            "BUY LIMIT rejected: SL must be below Entry."
+         );
+
+         return false;
+      }
+
+      if(tp <= entry)
+      {
+         Print(
+            "BUY LIMIT rejected: TP must be above Entry."
          );
 
          return false;
       }
    }
 
+   // -------------------------------------------------------------
+   // SELL LIMIT
+   // -------------------------------------------------------------
+
    if(signal == "SELL LIMIT")
    {
       if(entry <= tick.bid)
       {
          Print(
-            "SELL LIMIT invalid: entry is not above Bid."
+            "SELL LIMIT rejected: Entry ",
+            entry,
+            " <= Bid ",
+            tick.bid
          );
 
          return false;
@@ -730,7 +780,25 @@ bool ValidatePendingPrice(
       )
       {
          Print(
-            "SELL LIMIT too close to market."
+            "SELL LIMIT rejected: Entry too close to market."
+         );
+
+         return false;
+      }
+
+      if(sl <= entry)
+      {
+         Print(
+            "SELL LIMIT rejected: SL must be above Entry."
+         );
+
+         return false;
+      }
+
+      if(tp >= entry)
+      {
+         Print(
+            "SELL LIMIT rejected: TP must be below Entry."
          );
 
          return false;
@@ -740,6 +808,93 @@ bool ValidatePendingPrice(
    return true;
 }
 
+//==================================================================
+// ATR DISTANCE VALIDATION
+//==================================================================
+
+bool ValidateEntryATR(
+   string signal,
+   double entry,
+   double atr
+)
+{
+   if(atr <= 0)
+   {
+      Print(
+         "ATR unavailable. ATR distance filter skipped."
+      );
+
+      return true;
+   }
+
+   MqlTick tick;
+
+   if(!SymbolInfoTick(
+      _Symbol,
+      tick
+   ))
+   {
+      return false;
+   }
+
+   double marketPrice;
+
+   if(signal == "BUY LIMIT")
+      marketPrice = tick.ask;
+   else
+      marketPrice = tick.bid;
+
+   double distance =
+      MathAbs(
+         marketPrice - entry
+      );
+
+   double maxDistance =
+      atr * MaxEntryDistanceATR;
+
+   if(
+      distance > maxDistance
+   )
+   {
+      Print(
+         "Signal rejected: Entry distance ",
+         distance,
+         " > ATR limit ",
+         maxDistance
+      );
+
+      return false;
+   }
+
+   return true;
+}
+
+//==================================================================
+// RISK REWARD
+//==================================================================
+
+double CalculateRR(
+   string signal,
+   double entry,
+   double sl,
+   double tp
+)
+{
+   double risk =
+      MathAbs(
+         entry - sl
+      );
+
+   double reward =
+      MathAbs(
+         tp - entry
+      );
+
+   if(risk <= 0)
+      return 0;
+
+   return reward / risk;
+}
 
 //==================================================================
 // PLACE BUY LIMIT
@@ -752,18 +907,17 @@ bool PlaceBuyLimit(
    string comment
 )
 {
-   entry =
-      NormalizePrice(entry);
+   entry = NormalizePrice(entry);
 
-   sl =
-      NormalizePrice(sl);
+   sl = NormalizePrice(sl);
 
-   tp =
-      NormalizePrice(tp);
+   tp = NormalizePrice(tp);
 
-   if(!ValidatePendingPrice(
+   if(!ValidateTradePlan(
       "BUY LIMIT",
-      entry
+      entry,
+      sl,
+      tp
    ))
    {
       return false;
@@ -805,14 +959,12 @@ bool PlaceBuyLimit(
       return false;
    }
 
-   ulong order =
+   LastKnownOrder =
       trade.ResultOrder();
-
-   LastKnownOrder = order;
 
    Print(
       "BUY LIMIT placed. Ticket=",
-      order,
+      LastKnownOrder,
       " Entry=",
       entry,
       " SL=",
@@ -823,7 +975,6 @@ bool PlaceBuyLimit(
 
    return true;
 }
-
 
 //==================================================================
 // PLACE SELL LIMIT
@@ -836,18 +987,17 @@ bool PlaceSellLimit(
    string comment
 )
 {
-   entry =
-      NormalizePrice(entry);
+   entry = NormalizePrice(entry);
 
-   sl =
-      NormalizePrice(sl);
+   sl = NormalizePrice(sl);
 
-   tp =
-      NormalizePrice(tp);
+   tp = NormalizePrice(tp);
 
-   if(!ValidatePendingPrice(
+   if(!ValidateTradePlan(
       "SELL LIMIT",
-      entry
+      entry,
+      sl,
+      tp
    ))
    {
       return false;
@@ -889,14 +1039,12 @@ bool PlaceSellLimit(
       return false;
    }
 
-   ulong order =
+   LastKnownOrder =
       trade.ResultOrder();
-
-   LastKnownOrder = order;
 
    Print(
       "SELL LIMIT placed. Ticket=",
-      order,
+      LastKnownOrder,
       " Entry=",
       entry,
       " SL=",
@@ -907,7 +1055,6 @@ bool PlaceSellLimit(
 
    return true;
 }
-
 
 //==================================================================
 // PROCESS SIGNAL
@@ -923,7 +1070,7 @@ void ProcessSignal(string json)
    ))
    {
       Print(
-         "XAU/USD object not found in Worker response."
+         "XAU/USD object not found."
       );
 
       return;
@@ -964,10 +1111,7 @@ void ProcessSignal(string json)
       score
    );
 
-   // -------------------------------------------------------------
-   // WAIT
-   // -------------------------------------------------------------
-
+   // فقط BUY LIMIT / SELL LIMIT
    if(
       signal != "BUY LIMIT" &&
       signal != "SELL LIMIT"
@@ -977,18 +1121,14 @@ void ProcessSignal(string json)
    }
 
    // -------------------------------------------------------------
-   // SCORE FILTER
+   // SCORE
    // -------------------------------------------------------------
 
-   if(
-      score < MinimumScore
-   )
+   if(score < MinimumScore)
    {
       Print(
-         "Signal rejected. Score=",
-         score,
-         " Minimum=",
-         MinimumScore
+         "Signal rejected by score: ",
+         score
       );
 
       return;
@@ -1001,9 +1141,7 @@ void ProcessSignal(string json)
    int existing =
       CountOurGoldOrders();
 
-   if(
-      existing >= MaxGoldOrders
-   )
+   if(existing >= MaxGoldOrders)
    {
       Print(
          "Maximum EA orders reached: ",
@@ -1014,7 +1152,7 @@ void ProcessSignal(string json)
    }
 
    // -------------------------------------------------------------
-   // GET TRADE PLAN
+   // TRADE PLAN
    // -------------------------------------------------------------
 
    double entry = 0;
@@ -1029,13 +1167,11 @@ void ProcessSignal(string json)
 
    double atr = 0;
 
-   if(
-      !GetJsonNumber(
-         gold,
-         "entry",
-         entry
-      )
-   )
+   if(!GetJsonNumber(
+      gold,
+      "entry",
+      entry
+   ))
    {
       Print(
          "Entry not found."
@@ -1044,13 +1180,11 @@ void ProcessSignal(string json)
       return;
    }
 
-   if(
-      !GetJsonNumber(
-         gold,
-         "stopLoss",
-         sl
-      )
-   )
+   if(!GetJsonNumber(
+      gold,
+      "stopLoss",
+      sl
+   ))
    {
       Print(
          "StopLoss not found."
@@ -1096,7 +1230,7 @@ void ProcessSignal(string json)
    }
 
    // -------------------------------------------------------------
-   // CHOOSE FINAL TP
+   // FINAL TP
    // -------------------------------------------------------------
 
    double finalTP = tp1;
@@ -1115,8 +1249,100 @@ void ProcessSignal(string json)
       finalTP = tp2;
    }
 
+   if(finalTP <= 0)
+   {
+      Print(
+         "No valid TP."
+      );
+
+      return;
+   }
+
    // -------------------------------------------------------------
-   // DUPLICATE CHECK
+   // TRADE PLAN GEOMETRY
+   // -------------------------------------------------------------
+
+   if(signal == "BUY LIMIT")
+   {
+      if(sl >= entry || finalTP <= entry)
+      {
+         Print(
+            "Invalid BUY LIMIT geometry."
+         );
+
+         return;
+      }
+   }
+
+   if(signal == "SELL LIMIT")
+   {
+      if(sl <= entry || finalTP >= entry)
+      {
+         Print(
+            "Invalid SELL LIMIT geometry."
+         );
+
+         return;
+      }
+   }
+
+   // -------------------------------------------------------------
+   // RISK / REWARD
+   // -------------------------------------------------------------
+
+   double rr =
+      CalculateRR(
+         signal,
+         entry,
+         sl,
+         finalTP
+      );
+
+   Print(
+      "Calculated R:R = ",
+      DoubleToString(rr,2)
+   );
+
+   if(
+      rr < MinimumRiskReward
+   )
+   {
+      Print(
+         "Signal rejected: R:R too low."
+      );
+
+      return;
+   }
+
+   // -------------------------------------------------------------
+   // ATR ENTRY DISTANCE
+   // -------------------------------------------------------------
+
+   if(!ValidateEntryATR(
+      signal,
+      entry,
+      atr
+   ))
+   {
+      return;
+   }
+
+   // -------------------------------------------------------------
+   // MARKET VALIDATION
+   // -------------------------------------------------------------
+
+   if(!ValidateTradePlan(
+      signal,
+      entry,
+      sl,
+      finalTP
+   ))
+   {
+      return;
+   }
+
+   // -------------------------------------------------------------
+   // DUPLICATE
    // -------------------------------------------------------------
 
    if(
@@ -1134,7 +1360,7 @@ void ProcessSignal(string json)
    }
 
    // -------------------------------------------------------------
-   // SAVE STATE
+   // SAVE
    // -------------------------------------------------------------
 
    LastSignal = signal;
@@ -1142,80 +1368,13 @@ void ProcessSignal(string json)
    LastEntry = entry;
 
    // -------------------------------------------------------------
-   // DEMO / LIVE CONTROL
+   // TRADING DISABLED
    // -------------------------------------------------------------
 
    if(!EnableTrading)
    {
-      Print(
-         "Trading disabled. Signal received only."
-      );
-
       string msg =
          "📡 Hakim Gold Signals\n\n" +
-         "💎 XAUUSD\n" +
-         "📊 " + signal + "\n" +
-         "⭐ Score: " +
-         DoubleToString(score,0) +
-         "/100\n" +
-         "🎯 Entry: " +
-         DoubleToString(entry,_Digits) +
-         "\n🛑 SL: " +
-         DoubleToString(sl,_Digits) +
-         "\n🎯 TP: " +
-         DoubleToString(finalTP,_Digits) +
-         "\n\n⚠️ Trading disabled.";
-
-      SendTelegramMessage(msg);
-
-      return;
-   }
-
-   // -------------------------------------------------------------
-   // PLACE ORDER
-   // -------------------------------------------------------------
-
-   string comment =
-      "HakimGold_V5.6";
-
-   bool placed = false;
-
-   if(
-      signal == "BUY LIMIT"
-   )
-   {
-      placed =
-         PlaceBuyLimit(
-            entry,
-            sl,
-            finalTP,
-            comment
-         );
-   }
-
-   if(
-      signal == "SELL LIMIT"
-   )
-   {
-      placed =
-         PlaceSellLimit(
-            entry,
-            sl,
-            finalTP,
-            comment
-         );
-   }
-
-   // -------------------------------------------------------------
-   // TELEGRAM
-   // -------------------------------------------------------------
-
-   string message;
-
-   if(placed)
-   {
-      message =
-         "🟢 Hakim Gold EA\n\n" +
          "💎 XAUUSD\n" +
          "📊 " + signal + "\n" +
          "⭐ Score: " +
@@ -1227,17 +1386,87 @@ void ProcessSignal(string json)
          DoubleToString(sl,_Digits) +
          "\n🎯 TP: " +
          DoubleToString(finalTP,_Digits) +
+         "\n📊 R:R: " +
+         DoubleToString(rr,2) +
+         "\n\n" +
+         "💰 مدیریت سرمایه و کنترل ریسک را رعایت کنید.\n" +
+         "📊 این سیگنال بر اساس شرایط تکنیکال فعلی بازار تولید شده و با تغییر شرایط بازار ممکن است اعتبار آن از بین برود.";
+
+      SendTelegramMessage(msg);
+
+      Print(
+         "Trading disabled. Signal only."
+      );
+
+      return;
+   }
+
+   // -------------------------------------------------------------
+   // PLACE
+   // -------------------------------------------------------------
+
+   string comment =
+      "HakimGold_V5.7";
+
+   bool placed = false;
+
+   if(signal == "BUY LIMIT")
+   {
+      placed =
+         PlaceBuyLimit(
+            entry,
+            sl,
+            finalTP,
+            comment
+         );
+   }
+
+   if(signal == "SELL LIMIT")
+   {
+      placed =
+         PlaceSellLimit(
+            entry,
+            sl,
+            finalTP,
+            comment
+         );
+   }
+
+   // -------------------------------------------------------------
+   // TELEGRAM RESULT
+   // -------------------------------------------------------------
+
+   string message;
+
+   if(placed)
+   {
+      message =
+         "🟢 Hakim Gold EA V5.7\n\n" +
+         "💎 XAUUSD\n" +
+         "📊 " + signal + "\n" +
+         "⭐ Score: " +
+         DoubleToString(score,0) +
+         "/100\n\n" +
+         "📍 Entry: " +
+         DoubleToString(entry,_Digits) +
+         "\n🛑 SL: " +
+         DoubleToString(sl,_Digits) +
+         "\n🎯 TP: " +
+         DoubleToString(finalTP,_Digits) +
+         "\n📊 R:R: " +
+         DoubleToString(rr,2) +
          "\n\n" +
          "📦 Pending order placed\n" +
          "🔢 Ticket: " +
          IntegerToString((int)LastKnownOrder) +
          "\n\n" +
-         "⚠️ Demo testing recommended.";
+         "💰 مدیریت سرمایه و کنترل ریسک را رعایت کنید.\n" +
+         "📊 این سیگنال بر اساس شرایط تکنیکال فعلی بازار تولید شده و با تغییر شرایط بازار ممکن است اعتبار آن از بین برود.";
    }
    else
    {
       message =
-         "🔴 Hakim Gold EA\n\n" +
+         "🔴 Hakim Gold EA V5.7\n\n" +
          "XAUUSD order FAILED\n" +
          signal +
          "\n\n" +
@@ -1247,6 +1476,8 @@ void ProcessSignal(string json)
          DoubleToString(sl,_Digits) +
          "\nTP: " +
          DoubleToString(finalTP,_Digits) +
+         "\nR:R: " +
+         DoubleToString(rr,2) +
          "\n\n" +
          "Check MT5 Experts/Journal.";
    }
@@ -1254,9 +1485,8 @@ void ProcessSignal(string json)
    SendTelegramMessage(message);
 }
 
-
 //==================================================================
-// CHECK CLOSED / TRADE EVENTS
+// TRADE TRANSACTION
 //==================================================================
 
 void OnTradeTransaction(
@@ -1324,22 +1554,21 @@ void OnTradeTransaction(
          DEAL_PROFIT
       );
 
-   // -------------------------------------------------------------
    // ENTRY
-   // -------------------------------------------------------------
-
    if(
       entryType ==
       DEAL_ENTRY_IN
    )
    {
       string msg =
-         "🟢 Hakim Gold EA\n\n" +
+         "🟢 Hakim Gold EA V5.7\n\n" +
          "💎 XAUUSD معامله فعال شد\n" +
          "📌 Price: " +
          DoubleToString(price,_Digits) +
          "\n📦 Volume: " +
-         DoubleToString(volume,2);
+         DoubleToString(volume,2) +
+         "\n\n" +
+         "💰 مدیریت سرمایه و کنترل ریسک را رعایت کنید.";
 
       SendTelegramMessage(msg);
 
@@ -1349,10 +1578,7 @@ void OnTradeTransaction(
       );
    }
 
-   // -------------------------------------------------------------
    // EXIT
-   // -------------------------------------------------------------
-
    if(
       entryType ==
       DEAL_ENTRY_OUT
@@ -1368,7 +1594,7 @@ void OnTradeTransaction(
          resultText = "⚪ BREAK EVEN";
 
       string msg =
-         "📤 Hakim Gold EA\n\n" +
+         "📤 Hakim Gold EA V5.7\n\n" +
          "💎 XAUUSD معامله بسته شد\n\n" +
          resultText +
          "\n💰 P/L: " +
@@ -1382,7 +1608,6 @@ void OnTradeTransaction(
       );
    }
 }
-
 
 //==================================================================
 // INITIALIZATION
@@ -1414,7 +1639,7 @@ int OnInit()
    );
 
    Print(
-      "Hakim Gold Signals EA V5.6 started"
+      "Hakim Gold Signals EA V5.7 started"
    );
 
    Print(
@@ -1438,6 +1663,27 @@ int OnInit()
    );
 
    Print(
+      "Minimum Score: ",
+      MinimumScore
+   );
+
+   Print(
+      "Minimum R:R: ",
+      MinimumRiskReward
+   );
+
+   Print(
+      "Max Entry Distance ATR: ",
+      MaxEntryDistanceATR
+   );
+
+   Print(
+      "Signal Max Age: ",
+      SignalMaxAgeSeconds,
+      " seconds"
+   );
+
+   Print(
       "Trading: ",
       EnableTrading
    );
@@ -1456,7 +1702,6 @@ int OnInit()
    return INIT_SUCCEEDED;
 }
 
-
 //==================================================================
 // DEINITIALIZATION
 //==================================================================
@@ -1468,10 +1713,9 @@ void OnDeinit(
    EventKillTimer();
 
    Print(
-      "Hakim Gold Signals EA stopped."
+      "Hakim Gold Signals EA V5.7 stopped."
    );
 }
-
 
 //==================================================================
 // TIMER
@@ -1518,15 +1762,13 @@ void OnTimer()
    );
 }
 
-
 //==================================================================
 // TICK
 //==================================================================
 
 void OnTick()
 {
-   // Trading is handled by OnTimer().
-   // This keeps Worker polling independent
-   // from individual market ticks.
+   // Worker polling is handled by OnTimer().
 }
+
 //+------------------------------------------------------------------+
