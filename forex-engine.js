@@ -1,12 +1,16 @@
 // ============================================================
-// FOREX SIGNAL ENGINE V6.8
+// FOREX SIGNAL ENGINE V6.9
 // GOLD QUALITY — XAU/USD
 // 15M + 1H
 //
-// V6.8:
+// V6.9:
+// - Fixed dashboard undefined rendering bug
+// - Clean WAIT display
+// - Safe value formatting
 // - Telegram incoming webhook
 // - /start
 // - /status
+// - /signal
 // - /telegram-set-webhook
 // - /telegram-webhook-info
 // - Cron auto Telegram signals + news
@@ -41,7 +45,7 @@
 
 const CONFIG = {
 
-  VERSION: "V6.8",
+  VERSION: "V6.9",
 
   SYMBOL: "XAU/USD",
 
@@ -178,12 +182,15 @@ function getEnv(env, names) {
       value !== null &&
       String(value).trim() !== ""
     ) {
+
       return String(value).trim();
+
     }
 
   }
 
   return "";
+
 }
 
 
@@ -191,15 +198,52 @@ function num(value, fallback = 0) {
 
   const n = Number(value);
 
-  return Number.isFinite(n) ? n : fallback;
+  return Number.isFinite(n)
+    ? n
+    : fallback;
+
 }
 
 
 function round(value, decimals = 2) {
 
-  const factor = 10 ** decimals;
+  const n = Number(value);
 
-  return Math.round(value * factor) / factor;
+  if (!Number.isFinite(n)) {
+    return 0;
+  }
+
+  const factor =
+    10 ** decimals;
+
+  return Math.round(n * factor) / factor;
+
+}
+
+
+function safeValue(value, fallback = "-") {
+
+  if (
+    value === undefined ||
+    value === null ||
+    value === ""
+  ) {
+
+    return fallback;
+
+  }
+
+  if (
+    typeof value === "number" &&
+    !Number.isFinite(value)
+  ) {
+
+    return fallback;
+
+  }
+
+  return value;
+
 }
 
 
@@ -209,12 +253,14 @@ async function fetchWithTimeout(
   timeoutMs = 15000
 ) {
 
-  const controller = new AbortController();
+  const controller =
+    new AbortController();
 
-  const timer = setTimeout(
-    () => controller.abort(),
-    timeoutMs
-  );
+  const timer =
+    setTimeout(
+      () => controller.abort(),
+      timeoutMs
+    );
 
   try {
 
@@ -222,7 +268,8 @@ async function fetchWithTimeout(
       url,
       {
         ...options,
-        signal: controller.signal
+        signal:
+          controller.signal
       }
     );
 
@@ -243,23 +290,31 @@ async function alreadySent(env, key) {
 
   if (env.KV) {
 
-    const value = await env.KV.get(key);
+    const value =
+      await env.KV.get(key);
 
     return value !== null;
 
   }
 
-  if (key.startsWith("news:")) {
+  if (
+    key.startsWith("news:")
+  ) {
 
     return memorySentNews.has(key);
 
   }
 
   return memoryLastSignalKey === key;
+
 }
 
 
-async function markSent(env, key, ttl) {
+async function markSent(
+  env,
+  key,
+  ttl
+) {
 
   if (env.KV) {
 
@@ -275,21 +330,29 @@ async function markSent(env, key, ttl) {
 
   }
 
-  if (key.startsWith("news:")) {
+  if (
+    key.startsWith("news:")
+  ) {
 
     memorySentNews.add(key);
 
-    if (memorySentNews.size > 100) {
+    if (
+      memorySentNews.size > 100
+    ) {
 
       memorySentNews.delete(
-        memorySentNews.values().next().value
+        memorySentNews
+          .values()
+          .next()
+          .value
       );
 
     }
 
   } else {
 
-    memoryLastSignalKey = key;
+    memoryLastSignalKey =
+      key;
 
   }
 
@@ -306,10 +369,11 @@ async function getTimeSeries(
   outputSize
 ) {
 
-  const apiKey = getEnv(
-    env,
-    ["TWELVE_DATA_API_KEY"]
-  );
+  const apiKey =
+    getEnv(
+      env,
+      ["TWELVE_DATA_API_KEY"]
+    );
 
   if (!apiKey) {
 
@@ -322,33 +386,44 @@ async function getTimeSeries(
   const url =
     "https://api.twelvedata.com/time_series" +
     "?symbol=" +
-    encodeURIComponent(CONFIG.SYMBOL) +
+    encodeURIComponent(
+      CONFIG.SYMBOL
+    ) +
     "&interval=" +
-    encodeURIComponent(interval) +
+    encodeURIComponent(
+      interval
+    ) +
     "&outputsize=" +
-    encodeURIComponent(outputSize) +
+    encodeURIComponent(
+      outputSize
+    ) +
     "&format=JSON" +
     "&apikey=" +
-    encodeURIComponent(apiKey);
+    encodeURIComponent(
+      apiKey
+    );
 
   const response =
     await fetchWithTimeout(
       url,
       {
         headers: {
-          "Accept": "application/json"
+          "Accept":
+            "application/json"
         }
       },
       CONFIG.API_TIMEOUT_MS
     );
 
-  const text = await response.text();
+  const text =
+    await response.text();
 
   let data;
 
   try {
 
-    data = JSON.parse(text);
+    data =
+      JSON.parse(text);
 
   } catch {
 
@@ -391,17 +466,24 @@ async function getTimeSeries(
 
   return data.values
     .map(c => ({
-      datetime: c.datetime,
 
-      open: num(c.open),
+      datetime:
+        c.datetime,
 
-      high: num(c.high),
+      open:
+        num(c.open),
 
-      low: num(c.low),
+      high:
+        num(c.high),
 
-      close: num(c.close),
+      low:
+        num(c.low),
 
-      volume: num(c.volume)
+      close:
+        num(c.close),
+
+      volume:
+        num(c.volume)
 
     }))
     .filter(c =>
@@ -421,8 +503,12 @@ async function getTimeSeries(
 
 function ema(values, period) {
 
-  if (values.length < period) {
+  if (
+    values.length < period
+  ) {
+
     return [];
+
   }
 
   const result = [];
@@ -438,9 +524,12 @@ function ema(values, period) {
     i++
   ) {
 
-    const value = num(values[i]);
+    const value =
+      num(values[i]);
 
-    if (i === period - 1) {
+    if (
+      i === period - 1
+    ) {
 
       let sum = 0;
 
@@ -450,22 +539,30 @@ function ema(values, period) {
         j++
       ) {
 
-        sum += num(values[j]);
+        sum +=
+          num(values[j]);
 
       }
 
-      previous = sum / period;
+      previous =
+        sum / period;
 
-      result.push(previous);
+      result.push(
+        previous
+      );
 
-    } else if (i >= period) {
+    } else if (
+      i >= period
+    ) {
 
       previous =
         (value - previous) *
         multiplier +
         previous;
 
-      result.push(previous);
+      result.push(
+        previous
+      );
 
     }
 
@@ -476,10 +573,17 @@ function ema(values, period) {
 }
 
 
-function rsi(values, period = 14) {
+function rsi(
+  values,
+  period = 14
+) {
 
-  if (values.length <= period) {
+  if (
+    values.length <= period
+  ) {
+
     return [];
+
   }
 
   let gains = 0;
@@ -495,13 +599,16 @@ function rsi(values, period = 14) {
       values[i] -
       values[i - 1];
 
-    if (change >= 0) {
+    if (
+      change >= 0
+    ) {
 
       gains += change;
 
     } else {
 
-      losses += Math.abs(change);
+      losses +=
+        Math.abs(change);
 
     }
 
@@ -517,8 +624,12 @@ function rsi(values, period = 14) {
 
   const calculate = () => {
 
-    if (avgLoss === 0) {
+    if (
+      avgLoss === 0
+    ) {
+
       return 100;
+
     }
 
     return (
@@ -532,7 +643,9 @@ function rsi(values, period = 14) {
 
   };
 
-  result.push(calculate());
+  result.push(
+    calculate()
+  );
 
   for (
     let i = period + 1;
@@ -581,10 +694,17 @@ function rsi(values, period = 14) {
 }
 
 
-function atr(candles, period = 14) {
+function atr(
+  candles,
+  period = 14
+) {
 
-  if (candles.length <= period) {
+  if (
+    candles.length <= period
+  ) {
+
     return [];
+
   }
 
   const trs = [];
@@ -595,7 +715,9 @@ function atr(candles, period = 14) {
     i++
   ) {
 
-    if (i === 0) {
+    if (
+      i === 0
+    ) {
 
       trs.push(
         candles[i].high -
@@ -606,7 +728,8 @@ function atr(candles, period = 14) {
 
     }
 
-    const cur = candles[i];
+    const cur =
+      candles[i];
 
     const prev =
       candles[i - 1];
@@ -642,7 +765,8 @@ function atr(candles, period = 14) {
   let previous =
     sum / period;
 
-  const result = [previous];
+  const result =
+    [previous];
 
   for (
     let i = period;
@@ -658,7 +782,9 @@ function atr(candles, period = 14) {
       ) /
       period;
 
-    result.push(previous);
+    result.push(
+      previous
+    );
 
   }
 
@@ -713,7 +839,9 @@ function macd(values) {
       9
     );
 
-  if (!signalLine.length) {
+  if (
+    !signalLine.length
+  ) {
 
     const last =
       macdLine[
@@ -721,9 +849,13 @@ function macd(values) {
       ] || 0;
 
     return {
+
       macd: last,
+
       signal: 0,
+
       histogram: 0
+
     };
 
   }
@@ -740,9 +872,11 @@ function macd(values) {
 
   return {
 
-    macd: lastMacd,
+    macd:
+      lastMacd,
 
-    signal: lastSignal,
+    signal:
+      lastSignal,
 
     histogram:
       lastMacd -
@@ -759,10 +893,15 @@ function adxDetails(
 ) {
 
   const empty = {
+
     adx: 0,
+
     plusDI: 0,
+
     minusDI: 0,
+
     spread: 0
+
   };
 
   if (
@@ -850,19 +989,25 @@ function adxDetails(
     i++
   ) {
 
-    atrValue += tr[i];
+    atrValue +=
+      tr[i];
 
-    plus += plusDM[i];
+    plus +=
+      plusDM[i];
 
-    minus += minusDM[i];
+    minus +=
+      minusDM[i];
 
   }
 
-  atrValue /= period;
+  atrValue /=
+    period;
 
-  plus /= period;
+  plus /=
+    period;
 
-  minus /= period;
+  minus /=
+    period;
 
   const dxValues = [];
 
@@ -973,7 +1118,8 @@ function adxDetails(
 
   }
 
-  adxValue /= period;
+  adxValue /=
+    period;
 
   for (
     let i = period;
@@ -993,7 +1139,8 @@ function adxDetails(
 
   return {
 
-    adx: adxValue,
+    adx:
+      adxValue,
 
     plusDI:
       latestPlusDI,
@@ -1033,8 +1180,12 @@ function momentum(
       period
     ];
 
-  if (!previous) {
+  if (
+    !previous
+  ) {
+
     return 0;
+
   }
 
   return (
@@ -1052,7 +1203,9 @@ function momentum(
 // TREND / STRUCTURE / CANDLE
 // ============================================================
 
-function analyzeTrend(candles) {
+function analyzeTrend(
+  candles
+) {
 
   const closes =
     candles.map(
@@ -1060,10 +1213,16 @@ function analyzeTrend(candles) {
     );
 
   const e20 =
-    ema(closes, 20);
+    ema(
+      closes,
+      20
+    );
 
   const e50 =
-    ema(closes, 50);
+    ema(
+      closes,
+      50
+    );
 
   if (
     e20.length < 2 ||
@@ -1080,18 +1239,26 @@ function analyzeTrend(candles) {
     ];
 
   const ema20 =
-    e20[e20.length - 1];
+    e20[
+      e20.length - 1
+    ];
 
   const ema50 =
-    e50[e50.length - 1];
+    e50[
+      e50.length - 1
+    ];
 
   const ema20Slope =
     ema20 -
-    e20[e20.length - 2];
+    e20[
+      e20.length - 2
+    ];
 
   const ema50Slope =
     ema50 -
-    e50[e50.length - 2];
+    e50[
+      e50.length - 2
+    ];
 
   if (
     last > ema20 &&
@@ -1120,7 +1287,9 @@ function analyzeTrend(candles) {
 }
 
 
-function structureSignal(candles) {
+function structureSignal(
+  candles
+) {
 
   if (
     candles.length < 20
@@ -1187,14 +1356,22 @@ function structureSignal(candles) {
 }
 
 
-function candleQuality(candles) {
+function candleQuality(
+  candles
+) {
 
-  if (!candles.length) {
+  if (
+    !candles.length
+  ) {
 
     return {
+
       bullish: false,
+
       bearish: false,
+
       bodyRatio: 0
+
     };
 
   }
@@ -1208,12 +1385,18 @@ function candleQuality(candles) {
     c.high -
     c.low;
 
-  if (range <= 0) {
+  if (
+    range <= 0
+  ) {
 
     return {
+
       bullish: false,
+
       bearish: false,
+
       bodyRatio: 0
+
     };
 
   }
@@ -1255,13 +1438,20 @@ function analyzeTimeframe(
     );
 
   const trend =
-    analyzeTrend(candles);
+    analyzeTrend(
+      candles
+    );
 
   const structure =
-    structureSignal(candles);
+    structureSignal(
+      candles
+    );
 
   const rsiValues =
-    rsi(closes, 14);
+    rsi(
+      closes,
+      14
+    );
 
   const rsi14 =
     rsiValues[
@@ -1279,7 +1469,10 @@ function analyzeTimeframe(
     macd(closes);
 
   const atrValues =
-    atr(candles, 14);
+    atr(
+      candles,
+      14
+    );
 
   const atr14 =
     atrValues[
@@ -1303,7 +1496,10 @@ function analyzeTimeframe(
     adxPrev;
 
   const e20 =
-    ema(closes, 20);
+    ema(
+      closes,
+      20
+    );
 
   const ema20Last =
     e20[
@@ -1320,7 +1516,8 @@ function analyzeTimeframe(
             closes.length - 1
           ] -
           ema20Last
-        ) / atr14
+        ) /
+        atr14
       : 0;
 
   const mom =
@@ -1330,7 +1527,9 @@ function analyzeTimeframe(
     );
 
   const candle =
-    candleQuality(candles);
+    candleQuality(
+      candles
+    );
 
   return {
 
@@ -1390,7 +1589,9 @@ function analyzeTimeframe(
 // NEWS
 // ============================================================
 
-function normalizeNewsCurrency(value) {
+function normalizeNewsCurrency(
+  value
+) {
 
   const s =
     String(value ?? "")
@@ -1414,7 +1615,9 @@ function normalizeNewsCurrency(value) {
 }
 
 
-function normalizeNewsImpact(value) {
+function normalizeNewsImpact(
+  value
+) {
 
   const s =
     String(value ?? "")
@@ -1457,7 +1660,9 @@ function normalizeNewsImpact(value) {
 }
 
 
-function parseNewsTimestamp(item) {
+function parseNewsTimestamp(
+  item
+) {
 
   if (
     item.timestamp !== undefined &&
@@ -1516,7 +1721,9 @@ function parseNewsTimestamp(item) {
 }
 
 
-function normalizeNewsEvents(data) {
+function normalizeNewsEvents(
+  data
+) {
 
   const source =
     Array.isArray(data)
@@ -1608,8 +1815,9 @@ async function getLiveNews() {
           headers: {
             "Accept":
               "application/json",
+
             "User-Agent":
-              "Mozilla/5.0 HakimGoldSignals/6.8"
+              "Mozilla/5.0 HakimGoldSignals/6.9"
           }
         },
         CONFIG.NEWS_FETCH_TIMEOUT_MS
@@ -1685,11 +1893,9 @@ async function getLiveNews() {
       60 *
       1000;
 
-    let blockedEvent =
-      null;
+    let blockedEvent = null;
 
-    let nextEvent =
-      null;
+    let nextEvent = null;
 
     for (
       const event of events
@@ -1852,8 +2058,6 @@ function calculateScore(
       }
 
     };
-
-  // Max raw = 115
 
   add(
     slow.trend,
@@ -2063,8 +2267,6 @@ function calculateScore(
       "BEARISH";
 
   }
-
-  // Prevent weak ADX from producing a high score
 
   if (
     fast.adx14 < 18
@@ -2463,7 +2665,9 @@ function directionCheck(
 // TRADE PLAN
 // ============================================================
 
-function recentLevels(candles) {
+function recentLevels(
+  candles
+) {
 
   const sample =
     candles.slice(-20);
@@ -2566,18 +2770,15 @@ function buildTradePlan(
 
     tp1 =
       entry +
-      risk *
-      1.50;
+      risk * 1.50;
 
     tp2 =
       entry +
-      risk *
-      2.20;
+      risk * 2.20;
 
     tp3 =
       entry +
-      risk *
-      3.00;
+      risk * 3.00;
 
   } else if (
     direction ===
@@ -2621,18 +2822,15 @@ function buildTradePlan(
 
     tp1 =
       entry -
-      risk *
-      1.50;
+      risk * 1.50;
 
     tp2 =
       entry -
-      risk *
-      2.20;
+      risk * 2.20;
 
     tp3 =
       entry -
-      risk *
-      3.00;
+      risk * 3.00;
 
   } else {
 
@@ -2666,7 +2864,8 @@ function buildTradePlan(
 
     return {
       valid: false,
-      reason: "Entry too far from market"
+      reason:
+        "Entry too far from market"
     };
 
   }
@@ -2721,7 +2920,8 @@ function buildTradePlan(
 
     return {
       valid: false,
-      reason: "R:R below minimum"
+      reason:
+        "R:R below minimum"
     };
 
   }
@@ -2884,27 +3084,47 @@ function waitResponse(
     signal:
       "WAIT",
 
-    reason,
+    reason:
+      safeValue(
+        reason,
+        "شرایط ورود کامل نیست."
+      ),
 
     score:
-      scoring.score,
+      safeValue(
+        scoring?.score,
+        0
+      ),
 
     direction:
-      scoring.direction,
+      safeValue(
+        scoring?.direction,
+        "WAIT"
+      ),
 
     directionLead:
-      scoring.lead,
+      safeValue(
+        scoring?.lead,
+        0
+      ),
 
     adxQuality:
-      scoring.adxQuality,
+      safeValue(
+        scoring?.adxQuality,
+        "WEAK"
+      ),
 
-    fast,
+    fast:
+      fast || null,
 
-    slow,
+    slow:
+      slow || null,
 
-    news,
+    news:
+      news || null,
 
-    tradePlan,
+    tradePlan:
+      tradePlan || null,
 
     executionMs:
       Date.now() -
@@ -2919,7 +3139,9 @@ function waitResponse(
 // SIGNAL ENGINE
 // ============================================================
 
-async function generateSignal(env) {
+async function generateSignal(
+  env
+) {
 
   const started =
     Date.now();
@@ -2968,6 +3190,7 @@ async function generateSignal(env) {
     CONFIG.NEWS_FILTER_ENABLED
       ? await getLiveNews()
       : {
+
           feedStatus:
             "disabled",
 
@@ -2975,6 +3198,7 @@ async function generateSignal(env) {
 
           message:
             "News filter disabled."
+
         };
 
   const wait =
@@ -3169,7 +3393,8 @@ async function telegramApi(
         method
       ),
       {
-        method: "POST",
+        method:
+          "POST",
 
         headers: {
           "Content-Type":
@@ -3180,6 +3405,7 @@ async function telegramApi(
           JSON.stringify(
             payload
           )
+
       },
       CONFIG.API_TIMEOUT_MS
     );
@@ -3223,9 +3449,12 @@ async function sendTelegram(
   if (!chatId) {
 
     return {
+
       ok: false,
+
       error:
         "TELEGRAM_CHAT_ID is missing"
+
     };
 
   }
@@ -3250,8 +3479,11 @@ async function sendTelegramToChat(
   ) {
 
     return {
+
       ok: false,
+
       skipped: true
+
     };
 
   }
@@ -3259,9 +3491,12 @@ async function sendTelegramToChat(
   if (!chatId) {
 
     return {
+
       ok: false,
+
       error:
         "Telegram chat ID missing"
+
     };
 
   }
@@ -3270,11 +3505,15 @@ async function sendTelegramToChat(
     env,
     "sendMessage",
     {
+
       chat_id:
         chatId,
 
       text:
-        message
+        String(
+          message ?? ""
+        )
+
     }
   );
 
@@ -3301,6 +3540,12 @@ function formatSignalMessage(
   const p =
     signal.tradePlan;
 
+  if (!p) {
+
+    return null;
+
+  }
+
   return [
 
     `💎 HAKIM GOLD SIGNALS ${CONFIG.VERSION}`,
@@ -3309,45 +3554,134 @@ function formatSignalMessage(
 
     "🥇 XAUUSD",
 
-    `📊 ${signal.signal}`,
+    `📊 ${safeValue(
+      signal.signal
+    )}`,
 
-    `⭐ Score: ${signal.score}/100`,
-
-    "",
-
-    `📍 Entry: ${p.entry}`,
-
-    `🛑 SL: ${p.sl}`,
-
-    `🎯 TP1: ${p.tp1}`,
-
-    `🎯 TP2: ${p.tp2}`,
-
-    `🎯 TP3: ${p.tp3}`,
+    `⭐ Score: ${safeValue(
+      signal.score,
+      0
+    )}/100`,
 
     "",
 
-    `📊 R:R: ${p.rr}`,
+    `📍 Entry: ${safeValue(
+      p.entry
+    )}`,
 
-    `📏 Entry Distance: ${p.entryDistance} (${p.entryDistanceATR} ATR)`,
+    `🛑 SL: ${safeValue(
+      p.sl
+    )}`,
+
+    `🎯 TP1: ${safeValue(
+      p.tp1
+    )}`,
+
+    `🎯 TP2: ${safeValue(
+      p.tp2
+    )}`,
+
+    `🎯 TP3: ${safeValue(
+      p.tp3
+    )}`,
 
     "",
 
-    `📈 15M: ${signal.fast.trend}`,
+    `📊 R:R: ${safeValue(
+      p.rr
+    )}`,
 
-    `📈 1H: ${signal.slow.trend}`,
-
-    `💪 ADX 15M: ${round(signal.fast.adx14, 1)} | 1H: ${round(signal.slow.adx14, 1)}`,
-
-    `📊 DI Spread: ${round(signal.fast.diSpread, 1)}`,
-
-    `📉 RSI: ${round(signal.fast.rsi14, 1)}`,
-
-    `📰 News: ${signal.news.blocked ? "BLOCKED" : "CLEAR"}`,
+    `📏 Entry Distance: ${safeValue(
+      p.entryDistance
+    )} (${safeValue(
+      p.entryDistanceATR
+    )} ATR)`,
 
     "",
 
-    signal.riskMessage,
+    `📈 15M: ${safeValue(
+      signal.fast?.trend
+    )}`,
+
+    `📈 1H: ${safeValue(
+      signal.slow?.trend
+    )}`,
+
+    `💪 ADX 15M: ${signal.fast ? round(signal.fast.adx14, 1) : "-"} | 1H: ${signal.slow ? round(signal.slow.adx14, 1) : "-"}`,
+
+    `📊 DI Spread: ${signal.fast ? round(signal.fast.diSpread, 1) : "-"}`,
+
+    `📉 RSI: ${signal.fast ? round(signal.fast.rsi14, 1) : "-"}`,
+
+    `📰 News: ${signal.news?.blocked ? "BLOCKED" : "CLEAR"}`,
+
+    "",
+
+    safeValue(
+      signal.riskMessage,
+      "مدیریت سرمایه و کنترل ریسک را رعایت کنید."
+    ),
+
+    "",
+
+    "👤 عبدالحکیم داودی",
+
+    "💎 ترید عالی"
+
+  ].join("\n");
+
+}
+
+
+// ============================================================
+// WAIT TELEGRAM MESSAGE
+// ============================================================
+
+function formatWaitMessage(
+  signal
+) {
+
+  return [
+
+    `💎 HAKIM GOLD SIGNALS ${CONFIG.VERSION}`,
+
+    "",
+
+    "🥇 XAUUSD",
+
+    "⏸ WAIT",
+
+    "",
+
+    `💰 Price: ${safeValue(
+      signal?.price
+    )}`,
+
+    `⭐ Score: ${safeValue(
+      signal?.score,
+      0
+    )}/100`,
+
+    `📈 15M: ${safeValue(
+      signal?.fast?.trend
+    )}`,
+
+    `📈 1H: ${safeValue(
+      signal?.slow?.trend
+    )}`,
+
+    `💪 ADX 15M: ${signal?.fast ? round(signal.fast.adx14, 1) : "-"}`,
+
+    `📊 DI Spread: ${signal?.fast ? round(signal.fast.diSpread, 1) : "-"}`,
+
+    `📉 RSI: ${signal?.fast ? round(signal.fast.rsi14, 1) : "-"}`,
+
+    "",
+
+    `ℹ️ ${safeValue(
+      signal?.reason,
+      "شرایط ورود کامل نیست."
+    )}`,
 
     "",
 
@@ -3427,17 +3761,23 @@ async function sendNewsAlert(
       )
     );
 
-  const message = [
+  const lines = [
 
     "📰 USD HIGH IMPACT NEWS",
 
     "",
 
-    `🇺🇸 ${event.title}`,
+    `🇺🇸 ${safeValue(
+      event.title,
+      "USD News"
+    )}`,
 
     `⏰ حدود ${minutes} دقیقه دیگر`,
 
-    `📊 Impact: ${event.impact}`,
+    `📊 Impact: ${safeValue(
+      event.impact,
+      "High"
+    )}`,
 
     event.forecast
       ? `📌 Forecast: ${event.forecast}`
@@ -3455,11 +3795,15 @@ async function sendNewsAlert(
 
     CONFIG.TELEGRAM_NEWS_FOOTER
 
-  ]
-    .filter(
-      line => line !== ""
-    )
-    .join("\n");
+  ];
+
+  const message =
+    lines
+      .filter(
+        line =>
+          line !== ""
+      )
+      .join("\n");
 
   const result =
     await sendTelegram(
@@ -3492,13 +3836,18 @@ async function maybeSendSignal(
 ) {
 
   if (
+    !signal ||
     signal.signal === "WAIT" ||
     !CONFIG.TELEGRAM_SIGNAL_ENABLED
   ) {
 
     return {
+
       sent: false,
-      reason: "no signal"
+
+      reason:
+        "no signal"
+
     };
 
   }
@@ -3511,8 +3860,12 @@ async function maybeSendSignal(
   if (!message) {
 
     return {
+
       sent: false,
-      reason: "no message"
+
+      reason:
+        "no message"
+
     };
 
   }
@@ -3534,8 +3887,12 @@ async function maybeSendSignal(
   ) {
 
     return {
+
       sent: false,
-      reason: "duplicate"
+
+      reason:
+        "duplicate"
+
     };
 
   }
@@ -3557,15 +3914,23 @@ async function maybeSendSignal(
     );
 
     return {
+
       sent: true
+
     };
 
   }
 
   return {
+
     sent: false,
-    reason: "telegram error",
-    detail: result
+
+    reason:
+      "telegram error",
+
+    detail:
+      result
+
   };
 
 }
@@ -3680,8 +4045,12 @@ async function handleTelegramUpdate(
   if (!update) {
 
     return {
+
       ok: true,
-      ignored: "empty update"
+
+      ignored:
+        "empty update"
+
     };
 
   }
@@ -3694,8 +4063,12 @@ async function handleTelegramUpdate(
   if (!message) {
 
     return {
+
       ok: true,
-      ignored: "no message"
+
+      ignored:
+        "no message"
+
     };
 
   }
@@ -3715,8 +4088,12 @@ async function handleTelegramUpdate(
   if (!chatId) {
 
     return {
+
       ok: true,
-      ignored: "no chat id"
+
+      ignored:
+        "no chat id"
+
     };
 
   }
@@ -3726,6 +4103,7 @@ async function handleTelegramUpdate(
       .split(/\s+/)[0]
       .toLowerCase()
       .split("@")[0];
+
 
   // ----------------------------------------------------------
   // /start
@@ -3806,12 +4184,16 @@ async function handleTelegramUpdate(
     } catch (error) {
 
       signal = {
-        signal: "WAIT",
+
+        signal:
+          "WAIT",
+
         error:
           String(
             error?.message ||
             error
           )
+
       };
 
     }
@@ -3832,13 +4214,23 @@ async function handleTelegramUpdate(
 
       `🥇 Symbol: ${CONFIG.SYMBOL}`,
 
-      `📊 Signal: ${signal.signal || "WAIT"}`,
+      `📊 Signal: ${safeValue(
+        signal.signal,
+        "WAIT"
+      )}`,
 
-      `⭐ Score: ${signal.score ?? "-"}/100`,
+      `⭐ Score: ${safeValue(
+        signal.score,
+        0
+      )}/100`,
 
-      `📈 15M: ${signal.fast?.trend || "-"}`,
+      `📈 15M: ${safeValue(
+        signal.fast?.trend
+      )}`,
 
-      `📈 1H: ${signal.slow?.trend || "-"}`,
+      `📈 1H: ${safeValue(
+        signal.slow?.trend
+      )}`,
 
       `💪 ADX 15M: ${signal.fast ? round(signal.fast.adx14, 1) : "-"}`,
 
@@ -3862,9 +4254,12 @@ async function handleTelegramUpdate(
 
       "💎 ترید عالی"
 
-    ].filter(
-      line => line !== ""
-    ).join("\n");
+    ]
+      .filter(
+        line =>
+          line !== ""
+      )
+      .join("\n");
 
     return sendTelegramToChat(
       env,
@@ -3898,17 +4293,26 @@ async function handleTelegramUpdate(
         env,
         chatId,
         [
+
           `💎 HAKIM GOLD SIGNALS ${CONFIG.VERSION}`,
+
           "",
+
           "❌ خطا در بررسی بازار",
+
           "",
+
           String(
             error?.message ||
             error
           ),
+
           "",
+
           "👤 عبدالحکیم داودی",
+
           "💎 ترید عالی"
+
         ].join("\n")
       );
 
@@ -3921,22 +4325,9 @@ async function handleTelegramUpdate(
       return sendTelegramToChat(
         env,
         chatId,
-        [
-          `💎 HAKIM GOLD SIGNALS ${CONFIG.VERSION}`,
-          "",
-          "⏸ WAIT",
-          "",
-          `💰 Price: ${signal.price}`,
-          `⭐ Score: ${signal.score}/100`,
-          `📈 15M: ${signal.fast?.trend || "-"}`,
-          `📈 1H: ${signal.slow?.trend || "-"}`,
-          `💪 ADX: ${signal.fast ? round(signal.fast.adx14, 1) : "-"}`,
-          "",
-          `ℹ️ ${signal.reason || "شرایط ورود کامل نیست."}`,
-          "",
-          "👤 عبدالحکیم داودی",
-          "💎 ترید عالی"
-        ].join("\n")
+        formatWaitMessage(
+          signal
+        )
       );
 
     }
@@ -3964,24 +4355,39 @@ async function handleTelegramUpdate(
       env,
       chatId,
       [
+
         `💎 HAKIM GOLD SIGNALS ${CONFIG.VERSION}`,
+
         "",
+
         "دستور شناخته نشد.",
+
         "",
+
         "▶️ /start",
+
         "📊 /status",
+
         "🔄 /signal",
+
         "",
+
         "👤 عبدالحکیم داودی",
+
         "💎 ترید عالی"
+
       ].join("\n")
     );
 
   }
 
   return {
+
     ok: true,
-    ignored: "non-command message"
+
+    ignored:
+      "non-command message"
+
   };
 
 }
@@ -4002,14 +4408,20 @@ async function telegramWebhook(
   ) {
 
     return Response.json(
+
       {
+
         ok: false,
+
         error:
           "Telegram webhook requires POST"
+
       },
+
       {
         status: 405
       }
+
     );
 
   }
@@ -4022,14 +4434,20 @@ async function telegramWebhook(
   ) {
 
     return Response.json(
+
       {
+
         ok: false,
+
         error:
           "Invalid Telegram webhook secret"
+
       },
+
       {
         status: 403
       }
+
     );
 
   }
@@ -4044,22 +4462,26 @@ async function telegramWebhook(
   } catch {
 
     return Response.json(
+
       {
+
         ok: false,
+
         error:
           "Invalid JSON"
+
       },
+
       {
         status: 400
       }
+
     );
 
   }
 
-  // Respond immediately to Telegram.
-  // Processing continues in background.
-
   ctx.waitUntil(
+
     handleTelegramUpdate(
       env,
       update
@@ -4070,10 +4492,13 @@ async function telegramWebhook(
           error
         )
     )
+
   );
 
   return Response.json({
+
     ok: true
+
   });
 
 }
@@ -4102,11 +4527,13 @@ async function setTelegramWebhook(
     );
 
   const payload = {
+
     url:
       webhookUrl,
 
     allowed_updates:
       ["message"]
+
   };
 
   if (secret) {
@@ -4124,6 +4551,7 @@ async function setTelegramWebhook(
     );
 
   return Response.json({
+
     version:
       CONFIG.VERSION,
 
@@ -4135,6 +4563,7 @@ async function setTelegramWebhook(
 
     telegram:
       result
+
   });
 
 }
@@ -4156,11 +4585,13 @@ async function getTelegramWebhookInfo(
     );
 
   return Response.json({
+
     version:
       CONFIG.VERSION,
 
     telegram:
       result
+
   });
 
 }
@@ -4188,8 +4619,11 @@ async function healthResponse(
       CONFIG.SYMBOL,
 
     intervals: [
+
       CONFIG.INTERVAL_FAST,
+
       CONFIG.INTERVAL_SLOW
+
     ],
 
     kvBound:
@@ -4364,6 +4798,7 @@ function renderHomepage() {
 
   return `<!DOCTYPE html>
 <html lang="fa" dir="rtl">
+
 <head>
 
 <meta charset="UTF-8">
@@ -4521,15 +4956,15 @@ class="card">
 
 async function loadSignal(){
 
-const box=
+const box =
 document.getElementById("result");
 
-box.innerHTML=
+box.innerHTML =
 "⏳ در حال بررسی بازار...";
 
 try{
 
-const r=
+const r =
 await fetch(
 "/api/signals",
 {
@@ -4537,19 +4972,24 @@ cache:"no-store"
 }
 );
 
-render(
-await r.json()
-);
+const data =
+await r.json();
+
+render(data);
 
 }catch(e){
 
-box.innerHTML=
+box.innerHTML =
 "<div class='bad'>خطا در دریافت سیگنال</div>";
 
 }
 
 }
 
+
+// ------------------------------------------------------------
+// SAFE HTML ESCAPE
+// ------------------------------------------------------------
 
 function esc(v){
 
@@ -4567,45 +5007,73 @@ v ?? "-"
 .replace(
 />/g,
 "&gt;"
+)
+.replace(
+/"/g,
+"&quot;"
+)
+.replace(
+/'/g,
+"&#039;"
 );
 
 }
 
 
+// ------------------------------------------------------------
+// FIXED ITEM FUNCTION
+// IMPORTANT:
+// return MUST be on the same expression.
+// This prevents undefinedundefinedundefined.
+// ------------------------------------------------------------
+
 function item(l,v){
 
-return
+return (
 "<div class='item'>" +
 "<div class='label'>" +
 esc(l) +
 "</div>" +
 "<div class='value'>" +
-esc(v) +
+esc(
+v === undefined ||
+v === null ||
+v === ""
+? "-"
+: v
+) +
 "</div>" +
-"</div>";
+"</div>"
+);
 
 }
 
 
 function fmt(v){
 
-return typeof v === "number"
+return typeof v === "number" &&
+Number.isFinite(v)
 ? Math.round(v*100)/100
-: v;
+: "-";
 
 }
 
 
 function render(d){
 
-const box=
+const box =
 document.getElementById("result");
+
+
+// ----------------------------------------------------------
+// WAIT
+// ----------------------------------------------------------
 
 if(
 d.signal === "WAIT"
 ){
 
-box.innerHTML=
+box.innerHTML =
 
 "<h2 class='wait'>⏸ WAIT</h2>" +
 
@@ -4631,44 +5099,47 @@ d.score
 
 item(
 "15M",
-d.fast &&
-d.fast.trend
+d.fast?.trend
 ) +
 
 item(
 "1H",
-d.slow &&
-d.slow.trend
+d.slow?.trend
 ) +
 
 item(
 "ADX 15M",
-d.fast &&
-fmt(d.fast.adx14)
+d.fast
+? fmt(d.fast.adx14)
+: "-"
 ) +
 
 item(
 "ADX Slope",
-d.fast &&
-fmt(d.fast.adxSlope)
+d.fast
+? fmt(d.fast.adxSlope)
+: "-"
 ) +
 
 item(
 "ADX 1H",
-d.slow &&
-fmt(d.slow.adx14)
+d.slow
+? fmt(d.slow.adx14)
+: "-"
 ) +
 
 item(
 "DI Spread",
-d.fast &&
-fmt(d.fast.diSpread)
+d.fast
+? fmt(d.fast.diSpread)
+: "-"
 ) +
 
 item(
 "RSI",
-d.fast &&
-fmt(d.fast.rsi14)
+d.fast
+? fmt(d.fast.rsi14)
+: "-"
 ) +
 
 "</div>";
@@ -4677,10 +5148,28 @@ return;
 
 }
 
-const p=
+
+// ----------------------------------------------------------
+// SIGNAL
+// ----------------------------------------------------------
+
+const p =
 d.tradePlan;
 
-box.innerHTML=
+if (!p){
+
+box.innerHTML =
+
+"<h2 class='wait'>⏸ WAIT</h2>" +
+
+"<p>اطلاعات معامله کامل نیست.</p>";
+
+return;
+
+}
+
+
+box.innerHTML =
 
 "<h2 class='good'>💎 " +
 esc(d.signal) +
@@ -4695,27 +5184,32 @@ d.price
 
 item(
 "Score",
-d.score+"/100"
+String(d.score ?? "-") +
+"/100"
 ) +
 
 item(
 "15M",
-d.fast.trend
+d.fast?.trend
 ) +
 
 item(
 "1H",
-d.slow.trend
+d.slow?.trend
 ) +
 
 item(
 "ADX 15M",
-fmt(d.fast.adx14)
+d.fast
+? fmt(d.fast.adx14)
+: "-"
 ) +
 
 item(
 "ADX 1H",
-fmt(d.slow.adx14)
+d.slow
+? fmt(d.slow.adx14)
+: "-"
 ) +
 
 item(
@@ -4728,7 +5222,6 @@ d.news.blocked
 
 item(
 "R:R",
-p &&
 p.rr
 ) +
 
@@ -4826,6 +5319,7 @@ function withCors(
   return new Response(
     response.body,
     {
+
       status:
         response.status,
 
@@ -4833,6 +5327,7 @@ function withCors(
         response.statusText,
 
       headers
+
     }
   );
 
@@ -4943,10 +5438,14 @@ export default {
         return new Response(
           renderHomepage(),
           {
+
             headers: {
+
               "Content-Type":
                 "text/html; charset=UTF-8"
+
             }
+
           }
         );
 
@@ -5106,9 +5605,12 @@ export default {
 
         return withCors(
           Response.json({
+
             ok: true,
+
             ran:
               "scheduled job"
+
           })
         );
 
