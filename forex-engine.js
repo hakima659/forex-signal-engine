@@ -1,71 +1,94 @@
 // ============================================================
-// FOREX SIGNAL ENGINE V6.4
-// GOLD PRIORITY — XAU/USD
+// FOREX SIGNAL ENGINE V6.5
+// GOLD QUALITY — XAU/USD
 // 15M + 1H
 //
-// V6.4 MAIN FIX:
-// - Price/Entry distance filter
-// - Prevents unrealistic far-away pending entries
-// - WAIT when entry is too far from market
-// - Keeps score, RR, ATR, news and Telegram filters
+// V6.5 GOALS:
+// - Fewer but stronger setups
+// - Mandatory 1H + 15M direction confirmation
+// - ADX + DI strength filter
+// - RSI direction filter
+// - MACD histogram confirmation
+// - Momentum strength filter
+// - Structure-based pullback entry
+// - ATR risk management
+// - Entry distance protection
+// - High-impact USD news protection
+// - Telegram signal/news alerts
 //
 // Cloudflare Worker
-// Required secrets:
+//
+// REQUIRED SECRETS:
 // TWELVE_DATA_API_KEY
 // TELEGRAM_BOT_TOKEN
 // TELEGRAM_CHAT_ID
 //
-// Optional:
+// OPTIONAL:
 // TELEGRAM_NEWS_ENABLED
 // ============================================================
 
+
 const CONFIG = {
 
-  VERSION: "V6.4",
+  VERSION: "V6.5",
 
   SYMBOL: "XAU/USD",
 
   INTERVAL_FAST: "15min",
   INTERVAL_SLOW: "1h",
 
-  OUTPUT_SIZE_FAST: 120,
-  OUTPUT_SIZE_SLOW: 120,
+  OUTPUT_SIZE_FAST: 150,
+  OUTPUT_SIZE_SLOW: 150,
 
-  // -------------------------
-  // SIGNAL FILTERS
-  // -------------------------
 
-  MIN_SCORE: 80,
+  // ==========================================================
+  // QUALITY FILTERS
+  // ==========================================================
 
-  MIN_DIRECTION_LEAD: 8,
+  MIN_SCORE: 85,
+
+  MIN_DIRECTION_LEAD: 15,
+
+  MIN_ADX: 23,
+
+  MIN_DI_SPREAD: 5,
+
+  MIN_MOMENTUM: 0.03,
 
   MIN_RR: 1.30,
 
-  // ATR based SL
+
+  // ==========================================================
+  // ATR RISK
+  // ==========================================================
+
   ATR_SL_MULTIPLIER: 1.20,
 
-  // Entry pullback
-  ATR_ENTRY_MULTIPLIER: 0.90,
+  ATR_ENTRY_MULTIPLIER: 0.55,
 
-  // NEW V6.4
-  // Maximum allowed distance between
-  // current market price and pending entry.
-  //
-  // Entry distance must satisfy BOTH:
-  // - percentage limit
-  // - ATR limit
-  //
-  MAX_ENTRY_DISTANCE_ATR: 1.50,
+  MAX_ENTRY_DISTANCE_ATR: 1.20,
 
-  MAX_ENTRY_DISTANCE_PERCENT: 0.70,
+  MAX_ENTRY_DISTANCE_PERCENT: 0.55,
 
-  // Minimum distance so entry is not
-  // practically equal to current price.
-  MIN_ENTRY_DISTANCE_ATR: 0.10,
+  MIN_ENTRY_DISTANCE_ATR: 0.08,
 
-  // -------------------------
+
+  // ==========================================================
+  // RSI
+  // ==========================================================
+
+  BULL_RSI_MIN: 52,
+
+  BULL_RSI_MAX: 68,
+
+  BEAR_RSI_MIN: 32,
+
+  BEAR_RSI_MAX: 48,
+
+
+  // ==========================================================
   // NEWS
-  // -------------------------
+  // ==========================================================
 
   NEWS_FILTER_ENABLED: true,
 
@@ -92,9 +115,10 @@ const CONFIG = {
 
   NEWS_LOOKAHEAD_HOURS: 48,
 
-  // -------------------------
+
+  // ==========================================================
   // TELEGRAM
-  // -------------------------
+  // ==========================================================
 
   TELEGRAM_ENABLED: true,
 
@@ -105,17 +129,15 @@ const CONFIG = {
   TELEGRAM_NEWS_FOOTER:
     "💎 Hakim Gold Signals",
 
-  // -------------------------
+
+  // ==========================================================
   // API
-  // -------------------------
+  // ==========================================================
 
   API_TIMEOUT_MS: 15000,
 
-  // -------------------------
-  // PRICE
-  // -------------------------
-
   PRICE_DECIMALS: 2
+
 };
 
 
@@ -135,7 +157,7 @@ let memoryLastSignalKey = "";
 
 
 // ============================================================
-// ENVIRONMENT HELPERS
+// ENV
 // ============================================================
 
 function getEnv(env, names) {
@@ -160,53 +182,71 @@ function getEnv(env, names) {
 
 
 // ============================================================
-// NUMBER HELPERS
+// NUMBER
 // ============================================================
 
 function num(value, fallback = 0) {
 
   const n = Number(value);
 
-  return Number.isFinite(n) ? n : fallback;
+  return Number.isFinite(n)
+    ? n
+    : fallback;
 
 }
 
 
 function round(value, decimals = 2) {
 
-  const factor = 10 ** decimals;
+  const factor =
+    10 ** decimals;
 
-  return Math.round(value * factor) / factor;
+  return Math.round(
+    value * factor
+  ) / factor;
 
 }
 
 
 function clamp(value, min, max) {
 
-  return Math.max(min, Math.min(max, value));
+  return Math.max(
+    min,
+    Math.min(max, value)
+  );
 
 }
 
 
 // ============================================================
-// FETCH WITH TIMEOUT
+// FETCH TIMEOUT
 // ============================================================
 
-async function fetchWithTimeout(url, options = {}, timeoutMs = 15000) {
+async function fetchWithTimeout(
+  url,
+  options = {},
+  timeoutMs = 15000
+) {
 
-  const controller = new AbortController();
+  const controller =
+    new AbortController();
 
-  const timer = setTimeout(
-    () => controller.abort(),
-    timeoutMs
-  );
+  const timer =
+    setTimeout(
+      () => controller.abort(),
+      timeoutMs
+    );
 
   try {
 
-    return await fetch(url, {
-      ...options,
-      signal: controller.signal
-    });
+    return await fetch(
+      url,
+      {
+        ...options,
+        signal:
+          controller.signal
+      }
+    );
 
   } finally {
 
@@ -221,12 +261,17 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 15000) {
 // TWELVE DATA
 // ============================================================
 
-async function getTimeSeries(env, interval, outputSize) {
+async function getTimeSeries(
+  env,
+  interval,
+  outputSize
+) {
 
-  const apiKey = getEnv(env, [
-    "TWELVE_DATA_API_KEY",
-    "کلید API دوازده داده"
-  ]);
+  const apiKey =
+    getEnv(env, [
+      "TWELVE_DATA_API_KEY",
+      "کلید API دوازده داده"
+    ]);
 
   if (!apiKey) {
 
@@ -238,29 +283,45 @@ async function getTimeSeries(env, interval, outputSize) {
 
   const url =
     "https://api.twelvedata.com/time_series" +
-    "?symbol=" + encodeURIComponent(CONFIG.SYMBOL) +
-    "&interval=" + encodeURIComponent(interval) +
-    "&outputsize=" + encodeURIComponent(outputSize) +
+    "?symbol=" +
+    encodeURIComponent(
+      CONFIG.SYMBOL
+    ) +
+    "&interval=" +
+    encodeURIComponent(
+      interval
+    ) +
+    "&outputsize=" +
+    encodeURIComponent(
+      outputSize
+    ) +
     "&format=JSON" +
-    "&apikey=" + encodeURIComponent(apiKey);
+    "&apikey=" +
+    encodeURIComponent(
+      apiKey
+    );
 
-  const response = await fetchWithTimeout(
-    url,
-    {
-      headers: {
-        "Accept": "application/json"
-      }
-    },
-    CONFIG.API_TIMEOUT_MS
-  );
+  const response =
+    await fetchWithTimeout(
+      url,
+      {
+        headers: {
+          "Accept":
+            "application/json"
+        }
+      },
+      CONFIG.API_TIMEOUT_MS
+    );
 
-  const text = await response.text();
+  const text =
+    await response.text();
 
   let data;
 
   try {
 
-    data = JSON.parse(text);
+    data =
+      JSON.parse(text);
 
   } catch {
 
@@ -291,8 +352,10 @@ async function getTimeSeries(env, interval, outputSize) {
   }
 
   if (
-    !Array.isArray(data.values) ||
-    data.values.length < 30
+    !Array.isArray(
+      data.values
+    ) ||
+    data.values.length < 60
   ) {
 
     throw new Error(
@@ -302,20 +365,38 @@ async function getTimeSeries(env, interval, outputSize) {
   }
 
   return data.values
+
     .map(c => ({
-      datetime: c.datetime,
-      open: num(c.open),
-      high: num(c.high),
-      low: num(c.low),
-      close: num(c.close),
-      volume: num(c.volume)
+
+      datetime:
+        c.datetime,
+
+      open:
+        num(c.open),
+
+      high:
+        num(c.high),
+
+      low:
+        num(c.low),
+
+      close:
+        num(c.close),
+
+      volume:
+        num(c.volume)
+
     }))
+
     .filter(c =>
+
       c.open > 0 &&
       c.high > 0 &&
       c.low > 0 &&
       c.close > 0
+
     )
+
     .reverse();
 
 }
@@ -325,9 +406,14 @@ async function getTimeSeries(env, interval, outputSize) {
 // EMA
 // ============================================================
 
-function ema(values, period) {
+function ema(
+  values,
+  period
+) {
 
-  if (values.length < period) {
+  if (
+    values.length < period
+  ) {
     return [];
   }
 
@@ -338,29 +424,51 @@ function ema(values, period) {
 
   let previous = 0;
 
-  for (let i = 0; i < values.length; i++) {
+  for (
+    let i = 0;
+    i < values.length;
+    i++
+  ) {
 
-    const value = num(values[i]);
+    const value =
+      num(values[i]);
 
-    if (i === period - 1) {
+    if (
+      i === period - 1
+    ) {
 
       let sum = 0;
 
-      for (let j = 0; j < period; j++) {
-        sum += num(values[j]);
+      for (
+        let j = 0;
+        j < period;
+        j++
+      ) {
+
+        sum +=
+          num(values[j]);
+
       }
 
-      previous = sum / period;
+      previous =
+        sum / period;
 
-      result.push(previous);
+      result.push(
+        previous
+      );
 
-    } else if (i >= period) {
+    } else if (
+      i >= period
+    ) {
 
       previous =
-        (value - previous) * multiplier +
+        (value - previous) *
+        multiplier +
         previous;
 
-      result.push(previous);
+      result.push(
+        previous
+      );
 
     }
 
@@ -375,48 +483,77 @@ function ema(values, period) {
 // RSI
 // ============================================================
 
-function rsi(values, period = 14) {
+function rsi(
+  values,
+  period = 14
+) {
 
-  if (values.length <= period) {
+  if (
+    values.length <= period
+  ) {
     return [];
   }
 
   let gains = 0;
+
   let losses = 0;
 
-  for (let i = 1; i <= period; i++) {
+  for (
+    let i = 1;
+    i <= period;
+    i++
+  ) {
 
     const change =
-      values[i] - values[i - 1];
+      values[i] -
+      values[i - 1];
 
-    if (change >= 0) {
+    if (
+      change >= 0
+    ) {
+
       gains += change;
+
     } else {
-      losses += Math.abs(change);
+
+      losses +=
+        Math.abs(change);
+
     }
 
   }
 
-  let avgGain = gains / period;
+  let avgGain =
+    gains / period;
 
-  let avgLoss = losses / period;
+  let avgLoss =
+    losses / period;
 
   const result = [];
 
   function calculate() {
 
-    if (avgLoss === 0) {
+    if (
+      avgLoss === 0
+    ) {
       return 100;
     }
 
     const rs =
-      avgGain / avgLoss;
+      avgGain /
+      avgLoss;
 
-    return 100 - (100 / (1 + rs));
+    return (
+      100 -
+      100 /
+        (1 + rs)
+    );
 
   }
 
-  result.push(calculate());
+  result.push(
+    calculate()
+  );
 
   for (
     let i = period + 1;
@@ -425,23 +562,36 @@ function rsi(values, period = 14) {
   ) {
 
     const change =
-      values[i] - values[i - 1];
+      values[i] -
+      values[i - 1];
 
     const gain =
-      change > 0 ? change : 0;
+      change > 0
+        ? change
+        : 0;
 
     const loss =
-      change < 0 ? Math.abs(change) : 0;
+      change < 0
+        ? Math.abs(change)
+        : 0;
 
     avgGain =
-      ((avgGain * (period - 1)) + gain) /
-      period;
+      (
+        avgGain *
+        (period - 1) +
+        gain
+      ) / period;
 
     avgLoss =
-      ((avgLoss * (period - 1)) + loss) /
-      period;
+      (
+        avgLoss *
+        (period - 1) +
+        loss
+      ) / period;
 
-    result.push(calculate());
+    result.push(
+      calculate()
+    );
 
   }
 
@@ -454,15 +604,24 @@ function rsi(values, period = 14) {
 // ATR
 // ============================================================
 
-function atr(candles, period = 14) {
+function atr(
+  candles,
+  period = 14
+) {
 
-  if (candles.length <= period) {
+  if (
+    candles.length <= period
+  ) {
     return [];
   }
 
   const trs = [];
 
-  for (let i = 0; i < candles.length; i++) {
+  for (
+    let i = 0;
+    i < candles.length;
+    i++
+  ) {
 
     if (i === 0) {
 
@@ -475,18 +634,28 @@ function atr(candles, period = 14) {
 
     }
 
-    const high = candles[i].high;
+    const current =
+      candles[i];
 
-    const low = candles[i].low;
-
-    const previousClose =
-      candles[i - 1].close;
+    const previous =
+      candles[i - 1];
 
     const tr =
       Math.max(
-        high - low,
-        Math.abs(high - previousClose),
-        Math.abs(low - previousClose)
+
+        current.high -
+          current.low,
+
+        Math.abs(
+          current.high -
+          previous.close
+        ),
+
+        Math.abs(
+          current.low -
+          previous.close
+        )
+
       );
 
     trs.push(tr);
@@ -495,14 +664,22 @@ function atr(candles, period = 14) {
 
   let sum = 0;
 
-  for (let i = 0; i < period; i++) {
+  for (
+    let i = 0;
+    i < period;
+    i++
+  ) {
+
     sum += trs[i];
+
   }
 
   let previous =
     sum / period;
 
-  const result = [previous];
+  const result = [
+    previous
+  ];
 
   for (
     let i = period;
@@ -511,11 +688,15 @@ function atr(candles, period = 14) {
   ) {
 
     previous =
-      ((previous * (period - 1)) +
-        trs[i]) /
-      period;
+      (
+        previous *
+        (period - 1) +
+        trs[i]
+      ) / period;
 
-    result.push(previous);
+    result.push(
+      previous
+    );
 
   }
 
@@ -530,22 +711,32 @@ function atr(candles, period = 14) {
 
 function macd(values) {
 
-  const ema12 = ema(values, 12);
+  const ema12 =
+    ema(values, 12);
 
-  const ema26 = ema(values, 26);
+  const ema26 =
+    ema(values, 26);
 
-  if (!ema12.length || !ema26.length) {
+  if (
+    !ema12.length ||
+    !ema26.length
+  ) {
 
     return {
+
       macd: 0,
+
       signal: 0,
+
       histogram: 0
+
     };
 
   }
 
   const offset =
-    ema12.length - ema26.length;
+    ema12.length -
+    ema26.length;
 
   const macdLine = [];
 
@@ -556,50 +747,96 @@ function macd(values) {
   ) {
 
     macdLine.push(
-      ema12[i + offset] -
+
+      ema12[
+        i + offset
+      ] -
       ema26[i]
+
     );
 
   }
 
   const signalLine =
-    ema(macdLine, 9);
+    ema(
+      macdLine,
+      9
+    );
 
-  if (!signalLine.length) {
+  if (
+    !signalLine.length
+  ) {
+
+    const last =
+      macdLine[
+        macdLine.length - 1
+      ] || 0;
 
     return {
-      macd:
-        macdLine[macdLine.length - 1] || 0,
+
+      macd: last,
+
       signal: 0,
+
       histogram: 0
+
     };
 
   }
 
   const lastMacd =
-    macdLine[macdLine.length - 1];
+    macdLine[
+      macdLine.length - 1
+    ];
 
   const lastSignal =
-    signalLine[signalLine.length - 1];
+    signalLine[
+      signalLine.length - 1
+    ];
 
   return {
-    macd: lastMacd,
-    signal: lastSignal,
+
+    macd:
+      lastMacd,
+
+    signal:
+      lastSignal,
+
     histogram:
-      lastMacd - lastSignal
+      lastMacd -
+      lastSignal
+
   };
 
 }
 
 
 // ============================================================
-// ADX
+// ADX + DI
 // ============================================================
 
-function adx(candles, period = 14) {
+function adxDetails(
+  candles,
+  period = 14
+) {
 
-  if (candles.length <= period + 2) {
-    return 0;
+  if (
+    candles.length <=
+    period + 2
+  ) {
+
+    return {
+
+      adx: 0,
+
+      plusDI: 0,
+
+      minusDI: 0,
+
+      spread: 0
+
+    };
+
   }
 
   const tr = [];
@@ -608,11 +845,17 @@ function adx(candles, period = 14) {
 
   const minusDM = [];
 
-  for (let i = 1; i < candles.length; i++) {
+  for (
+    let i = 1;
+    i < candles.length;
+    i++
+  ) {
 
-    const current = candles[i];
+    const current =
+      candles[i];
 
-    const previous = candles[i - 1];
+    const previous =
+      candles[i - 1];
 
     const upMove =
       current.high -
@@ -623,35 +866,64 @@ function adx(candles, period = 14) {
       current.low;
 
     plusDM.push(
-      upMove > downMove && upMove > 0
+
+      upMove >
+        downMove &&
+      upMove > 0
         ? upMove
         : 0
+
     );
 
     minusDM.push(
-      downMove > upMove && downMove > 0
+
+      downMove >
+        upMove &&
+      downMove > 0
         ? downMove
         : 0
+
     );
 
     tr.push(
+
       Math.max(
-        current.high - current.low,
+
+        current.high -
+          current.low,
+
         Math.abs(
           current.high -
           previous.close
         ),
+
         Math.abs(
           current.low -
           previous.close
         )
+
       )
+
     );
 
   }
 
-  if (tr.length < period) {
-    return 0;
+  if (
+    tr.length < period
+  ) {
+
+    return {
+
+      adx: 0,
+
+      plusDI: 0,
+
+      minusDI: 0,
+
+      spread: 0
+
+    };
+
   }
 
   let atrValue = 0;
@@ -660,7 +932,11 @@ function adx(candles, period = 14) {
 
   let minus = 0;
 
-  for (let i = 0; i < period; i++) {
+  for (
+    let i = 0;
+    i < period;
+    i++
+  ) {
 
     atrValue += tr[i];
 
@@ -678,6 +954,10 @@ function adx(candles, period = 14) {
 
   const dxValues = [];
 
+  let latestPlusDI = 0;
+
+  let latestMinusDI = 0;
+
   for (
     let i = period;
     i < tr.length;
@@ -685,52 +965,98 @@ function adx(candles, period = 14) {
   ) {
 
     atrValue =
-      ((atrValue * (period - 1)) +
-        tr[i]) /
-      period;
+      (
+        atrValue *
+        (period - 1) +
+        tr[i]
+      ) / period;
 
     plus =
-      ((plus * (period - 1)) +
-        plusDM[i]) /
-      period;
+      (
+        plus *
+        (period - 1) +
+        plusDM[i]
+      ) / period;
 
     minus =
-      ((minus * (period - 1)) +
-        minusDM[i]) /
-      period;
+      (
+        minus *
+        (period - 1) +
+        minusDM[i]
+      ) / period;
 
-    const plusDI =
+    latestPlusDI =
       atrValue === 0
         ? 0
-        : 100 * plus / atrValue;
+        : 100 *
+          plus /
+          atrValue;
 
-    const minusDI =
+    latestMinusDI =
       atrValue === 0
         ? 0
-        : 100 * minus / atrValue;
+        : 100 *
+          minus /
+          atrValue;
 
     const denominator =
-      plusDI + minusDI;
+      latestPlusDI +
+      latestMinusDI;
 
     const dx =
       denominator === 0
         ? 0
         : 100 *
-          Math.abs(plusDI - minusDI) /
+          Math.abs(
+            latestPlusDI -
+            latestMinusDI
+          ) /
           denominator;
 
     dxValues.push(dx);
 
   }
 
-  if (dxValues.length < period) {
-    return dxValues[dxValues.length - 1] || 0;
+  if (
+    dxValues.length < period
+  ) {
+
+    const adx =
+      dxValues[
+        dxValues.length - 1
+      ] || 0;
+
+    return {
+
+      adx,
+
+      plusDI:
+        latestPlusDI,
+
+      minusDI:
+        latestMinusDI,
+
+      spread:
+        Math.abs(
+          latestPlusDI -
+          latestMinusDI
+        )
+
+    };
+
   }
 
   let adxValue = 0;
 
-  for (let i = 0; i < period; i++) {
-    adxValue += dxValues[i];
+  for (
+    let i = 0;
+    i < period;
+    i++
+  ) {
+
+    adxValue +=
+      dxValues[i];
+
   }
 
   adxValue /= period;
@@ -742,13 +1068,32 @@ function adx(candles, period = 14) {
   ) {
 
     adxValue =
-      ((adxValue * (period - 1)) +
-        dxValues[i]) /
-      period;
+      (
+        adxValue *
+        (period - 1) +
+        dxValues[i]
+      ) / period;
 
   }
 
-  return adxValue;
+  return {
+
+    adx:
+      adxValue,
+
+    plusDI:
+      latestPlusDI,
+
+    minusDI:
+      latestMinusDI,
+
+    spread:
+      Math.abs(
+        latestPlusDI -
+        latestMinusDI
+      )
+
+  };
 
 }
 
@@ -757,25 +1102,40 @@ function adx(candles, period = 14) {
 // MOMENTUM
 // ============================================================
 
-function momentum(values, period = 10) {
+function momentum(
+  values,
+  period = 10
+) {
 
-  if (values.length <= period) {
+  if (
+    values.length <= period
+  ) {
     return 0;
   }
 
   const current =
-    values[values.length - 1];
+    values[
+      values.length - 1
+    ];
 
   const previous =
-    values[values.length - 1 - period];
+    values[
+      values.length -
+      1 -
+      period
+    ];
 
-  if (!previous) {
+  if (
+    !previous
+  ) {
     return 0;
   }
 
   return (
-    (current - previous) /
-    previous
+    (
+      current -
+      previous
+    ) / previous
   ) * 100;
 
 }
@@ -785,27 +1145,67 @@ function momentum(values, period = 10) {
 // TREND
 // ============================================================
 
-function analyzeTrend(candles) {
+function analyzeTrend(
+  candles
+) {
 
   const closes =
-    candles.map(c => c.close);
+    candles.map(
+      c => c.close
+    );
 
-  const e20 = ema(closes, 20);
+  const e20 =
+    ema(
+      closes,
+      20
+    );
 
-  const e50 = ema(closes, 50);
+  const e50 =
+    ema(
+      closes,
+      50
+    );
+
+  const e20Prev =
+    e20.length >= 2
+      ? e20[e20.length - 2]
+      : 0;
+
+  const e50Prev =
+    e50.length >= 2
+      ? e50[e50.length - 2]
+      : 0;
 
   const last =
-    closes[closes.length - 1];
+    closes[
+      closes.length - 1
+    ];
 
   const ema20 =
-    e20[e20.length - 1];
+    e20[
+      e20.length - 1
+    ];
 
   const ema50 =
-    e50[e50.length - 1];
+    e50[
+      e50.length - 1
+    ];
+
+  const ema20Slope =
+    ema20 -
+    e20Prev;
+
+  const ema50Slope =
+    ema50 -
+    e50Prev;
 
   if (
+
     last > ema20 &&
-    ema20 > ema50
+    ema20 > ema50 &&
+    ema20Slope > 0 &&
+    ema50Slope >= 0
+
   ) {
 
     return "BULLISH";
@@ -813,8 +1213,12 @@ function analyzeTrend(candles) {
   }
 
   if (
+
     last < ema20 &&
-    ema20 < ema50
+    ema20 < ema50 &&
+    ema20Slope < 0 &&
+    ema50Slope <= 0
+
   ) {
 
     return "BEARISH";
@@ -830,10 +1234,16 @@ function analyzeTrend(candles) {
 // STRUCTURE
 // ============================================================
 
-function structureSignal(candles) {
+function structureSignal(
+  candles
+) {
 
-  if (candles.length < 10) {
+  if (
+    candles.length < 20
+  ) {
+
     return "NEUTRAL";
+
   }
 
   const recent =
@@ -843,20 +1253,40 @@ function structureSignal(candles) {
     candles.slice(-12, -6);
 
   const recentHigh =
-    Math.max(...recent.map(c => c.high));
+    Math.max(
+      ...recent.map(
+        c => c.high
+      )
+    );
 
   const previousHigh =
-    Math.max(...previous.map(c => c.high));
+    Math.max(
+      ...previous.map(
+        c => c.high
+      )
+    );
 
   const recentLow =
-    Math.min(...recent.map(c => c.low));
+    Math.min(
+      ...recent.map(
+        c => c.low
+      )
+    );
 
   const previousLow =
-    Math.min(...previous.map(c => c.low));
+    Math.min(
+      ...previous.map(
+        c => c.low
+      )
+    );
 
   if (
-    recentHigh > previousHigh &&
-    recentLow > previousLow
+
+    recentHigh >
+      previousHigh &&
+    recentLow >
+      previousLow
+
   ) {
 
     return "BULLISH";
@@ -864,8 +1294,12 @@ function structureSignal(candles) {
   }
 
   if (
-    recentHigh < previousHigh &&
-    recentLow < previousLow
+
+    recentHigh <
+      previousHigh &&
+    recentLow <
+      previousLow
+
   ) {
 
     return "BEARISH";
@@ -881,30 +1315,57 @@ function structureSignal(candles) {
 // BREAKOUT
 // ============================================================
 
-function breakoutSignal(candles) {
+function breakoutSignal(
+  candles
+) {
 
-  if (candles.length < 25) {
+  if (
+    candles.length < 25
+  ) {
+
     return "NEUTRAL";
+
   }
 
   const recent =
-    candles[candles.length - 1];
+    candles[
+      candles.length - 1
+    ];
 
   const previous =
-    candles.slice(-21, -1);
+    candles.slice(
+      -21,
+      -1
+    );
 
   const high =
-    Math.max(...previous.map(c => c.high));
+    Math.max(
+      ...previous.map(
+        c => c.high
+      )
+    );
 
   const low =
-    Math.min(...previous.map(c => c.low));
+    Math.min(
+      ...previous.map(
+        c => c.low
+      )
+    );
 
-  if (recent.close > high) {
+  if (
+    recent.close > high
+  ) {
+
     return "BULLISH";
+
   }
 
-  if (recent.close < low) {
+  if (
+    recent.close < low
+  ) {
+
     return "BEARISH";
+
   }
 
   return "NEUTRAL";
@@ -913,43 +1374,158 @@ function breakoutSignal(candles) {
 
 
 // ============================================================
-// TECHNICAL ANALYSIS
+// CANDLE QUALITY
 // ============================================================
 
-function analyzeTimeframe(candles) {
+function candleQuality(
+  candles
+) {
+
+  if (
+    !candles.length
+  ) {
+
+    return {
+
+      bullish: false,
+
+      bearish: false,
+
+      bodyRatio: 0
+
+    };
+
+  }
+
+  const c =
+    candles[
+      candles.length - 1
+    ];
+
+  const range =
+    c.high -
+    c.low;
+
+  if (
+    range <= 0
+  ) {
+
+    return {
+
+      bullish: false,
+
+      bearish: false,
+
+      bodyRatio: 0
+
+    };
+
+  }
+
+  const body =
+    Math.abs(
+      c.close -
+      c.open
+    );
+
+  const bodyRatio =
+    body / range;
+
+  return {
+
+    bullish:
+      c.close > c.open &&
+      bodyRatio >= 0.45,
+
+    bearish:
+      c.close < c.open &&
+      bodyRatio >= 0.45,
+
+    bodyRatio
+
+  };
+
+}
+
+
+// ============================================================
+// TIMEFRAME ANALYSIS
+// ============================================================
+
+function analyzeTimeframe(
+  candles
+) {
 
   const closes =
-    candles.map(c => c.close);
+    candles.map(
+      c => c.close
+    );
 
   const trend =
-    analyzeTrend(candles);
+    analyzeTrend(
+      candles
+    );
 
   const structure =
-    structureSignal(candles);
+    structureSignal(
+      candles
+    );
 
   const breakout =
-    breakoutSignal(candles);
+    breakoutSignal(
+      candles
+    );
 
   const rsiValues =
-    rsi(closes, 14);
+    rsi(
+      closes,
+      14
+    );
 
   const rsi14 =
-    rsiValues[rsiValues.length - 1] || 50;
+    rsiValues[
+      rsiValues.length - 1
+    ] || 50;
+
+  const previousRSI =
+    rsiValues.length >= 2
+      ? rsiValues[
+          rsiValues.length - 2
+        ]
+      : rsi14;
 
   const macdData =
-    macd(closes);
+    macd(
+      closes
+    );
 
   const atrValues =
-    atr(candles, 14);
+    atr(
+      candles,
+      14
+    );
 
   const atr14 =
-    atrValues[atrValues.length - 1] || 0;
+    atrValues[
+      atrValues.length - 1
+    ] || 0;
 
-  const adx14 =
-    adx(candles, 14);
+  const adxData =
+    adxDetails(
+      candles,
+      14
+    );
 
   const mom =
-    momentum(closes, 10);
+    momentum(
+      closes,
+      10
+    );
+
+  const candle =
+    candleQuality(
+      candles
+    );
 
   return {
 
@@ -960,6 +1536,8 @@ function analyzeTimeframe(candles) {
     breakout,
 
     rsi14,
+
+    previousRSI,
 
     macd:
       macdData.macd,
@@ -972,9 +1550,29 @@ function analyzeTimeframe(candles) {
 
     atr14,
 
-    adx14,
+    adx14:
+      adxData.adx,
 
-    momentum: mom
+    plusDI:
+      adxData.plusDI,
+
+    minusDI:
+      adxData.minusDI,
+
+    diSpread:
+      adxData.spread,
+
+    momentum:
+      mom,
+
+    candleBodyRatio:
+      candle.bodyRatio,
+
+    candleBullish:
+      candle.bullish,
+
+    candleBearish:
+      candle.bearish
 
   };
 
@@ -985,19 +1583,25 @@ function analyzeTimeframe(candles) {
 // NEWS CURRENCY
 // ============================================================
 
-function normalizeNewsCurrency(value) {
+function normalizeNewsCurrency(
+  value
+) {
 
   const s =
-    String(value ?? "")
-      .trim()
-      .toUpperCase();
+    String(
+      value ?? ""
+    )
+    .trim()
+    .toUpperCase();
 
   if (
+
     s === "USD" ||
     s === "US DOLLAR" ||
     s === "UNITED STATES" ||
     s === "UNITED STATES DOLLAR" ||
     s === "USA"
+
   ) {
 
     return "USD";
@@ -1013,17 +1617,23 @@ function normalizeNewsCurrency(value) {
 // NEWS IMPACT
 // ============================================================
 
-function normalizeNewsImpact(value) {
+function normalizeNewsImpact(
+  value
+) {
 
   const s =
-    String(value ?? "")
-      .trim()
-      .toLowerCase();
+    String(
+      value ?? ""
+    )
+    .trim()
+    .toLowerCase();
 
   if (
+
     s === "high" ||
     s.includes("high") ||
     s === "3"
+
   ) {
 
     return "High";
@@ -1031,10 +1641,12 @@ function normalizeNewsImpact(value) {
   }
 
   if (
+
     s === "medium" ||
     s === "med" ||
     s.includes("medium") ||
     s === "2"
+
   ) {
 
     return "Medium";
@@ -1042,9 +1654,11 @@ function normalizeNewsImpact(value) {
   }
 
   if (
+
     s === "low" ||
     s.includes("low") ||
     s === "1"
+
   ) {
 
     return "Low";
@@ -1060,20 +1674,32 @@ function normalizeNewsImpact(value) {
 // NEWS TIMESTAMP
 // ============================================================
 
-function parseNewsTimestamp(item) {
+function parseNewsTimestamp(
+  item
+) {
 
   if (
+
     item.timestamp !== undefined &&
     item.timestamp !== null &&
     item.timestamp !== ""
+
   ) {
 
     const numeric =
-      Number(item.timestamp);
+      Number(
+        item.timestamp
+      );
 
-    if (Number.isFinite(numeric)) {
+    if (
+      Number.isFinite(
+        numeric
+      )
+    ) {
 
-      return numeric < 10000000000
+      return numeric <
+        10000000000
+
         ? numeric * 1000
         : numeric;
 
@@ -1084,21 +1710,36 @@ function parseNewsTimestamp(item) {
   const candidates = [
 
     item.date,
+
     item.datetime,
+
     item.datetime_utc,
+
     item.time
 
   ];
 
-  for (const value of candidates) {
+  for (
+    const value of
+    candidates
+  ) {
 
-    if (!value) continue;
+    if (!value)
+      continue;
 
     const parsed =
-      Date.parse(String(value));
+      Date.parse(
+        String(value)
+      );
 
-    if (Number.isFinite(parsed)) {
+    if (
+      Number.isFinite(
+        parsed
+      )
+    ) {
+
       return parsed;
+
     }
 
   }
@@ -1112,20 +1753,31 @@ function parseNewsTimestamp(item) {
 // NORMALIZE NEWS
 // ============================================================
 
-function normalizeNewsEvents(data) {
+function normalizeNewsEvents(
+  data
+) {
 
   const source =
     Array.isArray(data)
+
       ? data
-      : Array.isArray(data?.events)
+
+      : Array.isArray(
+          data?.events
+        )
+
         ? data.events
+
         : [];
 
   return source
+
     .map(item => {
 
       const timestamp =
-        parseNewsTimestamp(item);
+        parseNewsTimestamp(
+          item
+        );
 
       return {
 
@@ -1161,16 +1813,21 @@ function normalizeNewsEvents(data) {
       };
 
     })
+
     .filter(item =>
 
       item.country === "USD" &&
       item.impact === "High" &&
-      Number.isFinite(item.timestamp)
+      Number.isFinite(
+        item.timestamp
+      )
 
     )
+
     .sort(
       (a, b) =>
-        a.timestamp - b.timestamp
+        a.timestamp -
+        b.timestamp
     );
 
 }
@@ -1186,9 +1843,13 @@ async function getLiveNews() {
     Date.now();
 
   if (
+
     memoryNewsCache &&
-    now - memoryNewsCacheTime <
-      CONFIG.NEWS_CACHE_SECONDS * 1000
+    now -
+      memoryNewsCacheTime <
+      CONFIG.NEWS_CACHE_SECONDS *
+      1000
+
   ) {
 
     return memoryNewsCache;
@@ -1202,24 +1863,37 @@ async function getLiveNews() {
 
     const response =
       await fetchWithTimeout(
+
         CONFIG.NEWS_FEED_URL,
+
         {
+
           headers: {
-            "Accept": "application/json",
+
+            "Accept":
+              "application/json",
+
             "User-Agent":
-              "Mozilla/5.0 HakimGoldSignals/6.4"
+              "Mozilla/5.0 HakimGoldSignals/6.5"
+
           }
+
         },
+
         CONFIG.NEWS_FETCH_TIMEOUT_MS
+
       );
 
     const fetchMs =
-      Date.now() - started;
+      Date.now() -
+      started;
 
     const text =
       await response.text();
 
-    if (!response.ok) {
+    if (
+      !response.ok
+    ) {
 
       throw new Error(
         `News HTTP ${response.status}`
@@ -1231,7 +1905,10 @@ async function getLiveNews() {
 
     try {
 
-      raw = JSON.parse(text);
+      raw =
+        JSON.parse(
+          text
+        );
 
     } catch {
 
@@ -1244,28 +1921,38 @@ async function getLiveNews() {
     const rawEvents =
       Array.isArray(raw)
         ? raw
-        : Array.isArray(raw?.events)
+        : Array.isArray(
+            raw?.events
+          )
           ? raw.events
           : [];
 
     const events =
-      normalizeNewsEvents(raw);
+      normalizeNewsEvents(
+        raw
+      );
 
     const usdEvents =
-      rawEvents.filter(item =>
-        normalizeNewsCurrency(
-          item.country ||
-          item.currency ||
-          item.curr
-        ) === "USD"
+      rawEvents.filter(
+        item =>
+
+          normalizeNewsCurrency(
+            item.country ||
+            item.currency ||
+            item.curr
+          ) === "USD"
+
       );
 
     const highImpactUsd =
-      usdEvents.filter(item =>
-        normalizeNewsImpact(
-          item.impact ||
-          item.importance
-        ) === "High"
+      usdEvents.filter(
+        item =>
+
+          normalizeNewsImpact(
+            item.impact ||
+            item.importance
+          ) === "High"
+
       );
 
     const beforeMs =
@@ -1284,33 +1971,45 @@ async function getLiveNews() {
       60 *
       1000;
 
-    let blockedEvent = null;
+    let blockedEvent =
+      null;
 
-    let nextEvent = null;
+    let nextEvent =
+      null;
 
-    for (const event of events) {
+    for (
+      const event of
+      events
+    ) {
 
       const diff =
-        event.timestamp - now;
+        event.timestamp -
+        now;
 
       if (
+
         diff >= -afterMs &&
         diff <= beforeMs
+
       ) {
 
-        blockedEvent = event;
+        blockedEvent =
+          event;
 
         break;
 
       }
 
       if (
+
         diff >= 0 &&
         diff <= lookaheadMs &&
         !nextEvent
+
       ) {
 
-        nextEvent = event;
+        nextEvent =
+          event;
 
       }
 
@@ -1320,15 +2019,19 @@ async function getLiveNews() {
 
       enabled: true,
 
-      feedStatus: "connected",
+      feedStatus:
+        "connected",
 
-      httpStatus: response.status,
+      httpStatus:
+        response.status,
 
       fetchMs,
 
-      rawEvents: rawEvents.length,
+      rawEvents:
+        rawEvents.length,
 
-      usdEvents: usdEvents.length,
+      usdEvents:
+        usdEvents.length,
 
       highImpactUsd:
         highImpactUsd.length,
@@ -1336,15 +2039,20 @@ async function getLiveNews() {
       events,
 
       blocked:
-        Boolean(blockedEvent),
+        Boolean(
+          blockedEvent
+        ),
 
       blockedEvent,
 
       nextEvent,
 
       message:
+
         blockedEvent
+
           ? "High impact USD news window is active."
+
           : "خبر مهمی در بازه بررسی‌شده پیدا نشد."
 
     };
@@ -1355,7 +2063,8 @@ async function getLiveNews() {
     memoryNewsCacheTime =
       now;
 
-    memoryNewsDiagnostics = result;
+    memoryNewsDiagnostics =
+      result;
 
     return result;
 
@@ -1365,12 +2074,14 @@ async function getLiveNews() {
 
       enabled: true,
 
-      feedStatus: "error",
+      feedStatus:
+        "error",
 
       httpStatus: 0,
 
       fetchMs:
-        Date.now() - started,
+        Date.now() -
+        started,
 
       rawEvents: 0,
 
@@ -1383,16 +2094,24 @@ async function getLiveNews() {
       blocked:
         CONFIG.NEWS_FAIL_CLOSED,
 
-      blockedEvent: null,
+      blockedEvent:
+        null,
 
-      nextEvent: null,
+      nextEvent:
+        null,
 
       error:
-        String(error?.message || error),
+        String(
+          error?.message ||
+          error
+        ),
 
       message:
+
         CONFIG.NEWS_FAIL_CLOSED
+
           ? "News feed unavailable. New entries blocked."
+
           : "News feed unavailable."
 
     };
@@ -1420,61 +2139,60 @@ function calculateScore(
 
   let bearish = 0;
 
-  // -------------------------
+
+  // ==========================================================
+  // 1H TREND — HEAVIEST
+  // ==========================================================
+
+  if (
+    slow.trend ===
+    "BULLISH"
+  ) {
+
+    bullish += 25;
+
+  }
+
+  if (
+    slow.trend ===
+    "BEARISH"
+  ) {
+
+    bearish += 25;
+
+  }
+
+
+  // ==========================================================
   // 15M TREND
-  // -------------------------
+  // ==========================================================
 
-  if (fast.trend === "BULLISH") {
+  if (
+    fast.trend ===
+    "BULLISH"
+  ) {
+
     bullish += 15;
+
   }
 
-  if (fast.trend === "BEARISH") {
+  if (
+    fast.trend ===
+    "BEARISH"
+  ) {
+
     bearish += 15;
+
   }
 
-  // -------------------------
-  // 1H TREND
-  // -------------------------
 
-  if (slow.trend === "BULLISH") {
-    bullish += 20;
-  }
-
-  if (slow.trend === "BEARISH") {
-    bearish += 20;
-  }
-
-  // -------------------------
-  // STRUCTURE
-  // -------------------------
-
-  if (fast.structure === "BULLISH") {
-    bullish += 10;
-  }
-
-  if (fast.structure === "BEARISH") {
-    bearish += 10;
-  }
-
-  // -------------------------
-  // BREAKOUT
-  // -------------------------
-
-  if (fast.breakout === "BULLISH") {
-    bullish += 10;
-  }
-
-  if (fast.breakout === "BEARISH") {
-    bearish += 10;
-  }
-
-  // -------------------------
-  // RSI
-  // -------------------------
+  // ==========================================================
+  // 1H STRUCTURE
+  // ==========================================================
 
   if (
-    fast.rsi14 >= 52 &&
-    fast.rsi14 <= 72
+    slow.structure ===
+    "BULLISH"
   ) {
 
     bullish += 10;
@@ -1482,20 +2200,47 @@ function calculateScore(
   }
 
   if (
-    fast.rsi14 >= 28 &&
-    fast.rsi14 <= 48
+    slow.structure ===
+    "BEARISH"
   ) {
 
     bearish += 10;
 
   }
 
-  // -------------------------
+
+  // ==========================================================
+  // 15M STRUCTURE
+  // ==========================================================
+
+  if (
+    fast.structure ===
+    "BULLISH"
+  ) {
+
+    bullish += 10;
+
+  }
+
+  if (
+    fast.structure ===
+    "BEARISH"
+  ) {
+
+    bearish += 10;
+
+  }
+
+
+  // ==========================================================
   // MACD
-  // -------------------------
+  // ==========================================================
 
   if (
-    fast.macdHistogram > 0
+    fast.macdHistogram >
+      0 &&
+    fast.macd >
+      fast.macdSignal
   ) {
 
     bullish += 10;
@@ -1503,24 +2248,88 @@ function calculateScore(
   }
 
   if (
-    fast.macdHistogram < 0
+    fast.macdHistogram <
+      0 &&
+    fast.macd <
+      fast.macdSignal
   ) {
 
     bearish += 10;
 
   }
 
-  // -------------------------
-  // ADX
-  // -------------------------
 
-  if (fast.adx14 >= 20) {
+  // ==========================================================
+  // RSI
+  // ==========================================================
 
-    if (bullish > bearish) {
+  if (
+
+    fast.rsi14 >=
+      CONFIG.BULL_RSI_MIN &&
+
+    fast.rsi14 <=
+      CONFIG.BULL_RSI_MAX &&
+
+    fast.rsi14 >=
+      fast.previousRSI
+
+  ) {
+
+    bullish += 10;
+
+  }
+
+  if (
+
+    fast.rsi14 >=
+      CONFIG.BEAR_RSI_MIN &&
+
+    fast.rsi14 <=
+      CONFIG.BEAR_RSI_MAX &&
+
+    fast.rsi14 <=
+      fast.previousRSI
+
+  ) {
+
+    bearish += 10;
+
+  }
+
+
+  // ==========================================================
+  // ADX + DI
+  // ==========================================================
+
+  if (
+    fast.adx14 >=
+      CONFIG.MIN_ADX
+  ) {
+
+    if (
+
+      fast.plusDI >
+        fast.minusDI &&
+
+      fast.diSpread >=
+        CONFIG.MIN_DI_SPREAD
+
+    ) {
 
       bullish += 10;
 
-    } else if (bearish > bullish) {
+    }
+
+    if (
+
+      fast.minusDI >
+        fast.plusDI &&
+
+      fast.diSpread >=
+        CONFIG.MIN_DI_SPREAD
+
+    ) {
 
       bearish += 10;
 
@@ -1528,50 +2337,98 @@ function calculateScore(
 
   }
 
-  // -------------------------
-  // MOMENTUM
-  // -------------------------
 
-  if (fast.momentum > 0) {
+  // ==========================================================
+  // MOMENTUM
+  // ==========================================================
+
+  if (
+    fast.momentum >=
+    CONFIG.MIN_MOMENTUM
+  ) {
 
     bullish += 5;
 
   }
 
-  if (fast.momentum < 0) {
+  if (
+    fast.momentum <=
+    -CONFIG.MIN_MOMENTUM
+  ) {
 
     bearish += 5;
 
   }
 
+
+  // ==========================================================
+  // CANDLE QUALITY
+  // ==========================================================
+
+  if (
+    fast.candleBullish
+  ) {
+
+    bullish += 5;
+
+  }
+
+  if (
+    fast.candleBearish
+  ) {
+
+    bearish += 5;
+
+  }
+
+
   const total =
-    bullish + bearish;
+    bullish +
+    bearish;
 
   let direction =
     "WAIT";
 
   let score = 0;
 
-  if (bullish > bearish) {
+  if (
+    bullish >
+    bearish
+  ) {
 
-    direction = "BULLISH";
+    direction =
+      "BULLISH";
 
     score =
       total > 0
+
         ? Math.round(
-            (bullish / total) * 100
+            (
+              bullish /
+              total
+            ) * 100
           )
+
         : 0;
 
-  } else if (bearish > bullish) {
+  } else if (
+    bearish >
+    bullish
+  ) {
 
-    direction = "BEARISH";
+    direction =
+      "BEARISH";
 
     score =
       total > 0
+
         ? Math.round(
-            (bearish / total) * 100
+            (
+              bearish /
+              total
+            ) * 100
           )
+
         : 0;
 
   }
@@ -1579,6 +2436,7 @@ function calculateScore(
   return {
 
     bullish,
+
     bearish,
 
     direction,
@@ -1587,7 +2445,146 @@ function calculateScore(
 
     lead:
       Math.abs(
-        bullish - bearish
+        bullish -
+        bearish
+      )
+
+  };
+
+}
+
+
+// ============================================================
+// REQUIRED DIRECTION CONFIRMATION
+// ============================================================
+
+function directionConfirmed(
+  direction,
+  fast,
+  slow
+) {
+
+  if (
+    direction ===
+    "BULLISH"
+  ) {
+
+    return (
+
+      fast.trend ===
+        "BULLISH" &&
+
+      slow.trend ===
+        "BULLISH" &&
+
+      fast.structure !==
+        "BEARISH" &&
+
+      slow.structure !==
+        "BEARISH" &&
+
+      fast.plusDI >
+        fast.minusDI &&
+
+      fast.diSpread >=
+        CONFIG.MIN_DI_SPREAD &&
+
+      fast.adx14 >=
+        CONFIG.MIN_ADX &&
+
+      fast.macdHistogram >
+        0 &&
+
+      fast.rsi14 >=
+        CONFIG.BULL_RSI_MIN &&
+
+      fast.rsi14 <=
+        CONFIG.BULL_RSI_MAX &&
+
+      fast.momentum >=
+        CONFIG.MIN_MOMENTUM
+
+    );
+
+  }
+
+
+  if (
+    direction ===
+    "BEARISH"
+  ) {
+
+    return (
+
+      fast.trend ===
+        "BEARISH" &&
+
+      slow.trend ===
+        "BEARISH" &&
+
+      fast.structure !==
+        "BULLISH" &&
+
+      slow.structure !==
+        "BULLISH" &&
+
+      fast.minusDI >
+        fast.plusDI &&
+
+      fast.diSpread >=
+        CONFIG.MIN_DI_SPREAD &&
+
+      fast.adx14 >=
+        CONFIG.MIN_ADX &&
+
+      fast.macdHistogram <
+        0 &&
+
+      fast.rsi14 >=
+        CONFIG.BEAR_RSI_MIN &&
+
+      fast.rsi14 <=
+        CONFIG.BEAR_RSI_MAX &&
+
+      fast.momentum <=
+        -CONFIG.MIN_MOMENTUM
+
+    );
+
+  }
+
+  return false;
+
+}
+
+
+// ============================================================
+// SWING LEVELS
+// ============================================================
+
+function recentLevels(
+  candles
+) {
+
+  const sample =
+    candles.slice(
+      -20
+    );
+
+  return {
+
+    high:
+      Math.max(
+        ...sample.map(
+          c => c.high
+        )
+      ),
+
+    low:
+      Math.min(
+        ...sample.map(
+          c => c.low
+        )
       )
 
   };
@@ -1603,23 +2600,37 @@ function buildTradePlan(
   direction,
   currentPrice,
   fast,
-  slow
+  slow,
+  candles
 ) {
 
   const atrValue =
     fast.atr14;
 
   if (
-    !Number.isFinite(atrValue) ||
+    !Number.isFinite(
+      atrValue
+    ) ||
     atrValue <= 0
   ) {
 
     return {
+
       valid: false,
-      reason: "Invalid ATR"
+
+      reason:
+        "Invalid ATR"
+
     };
 
   }
+
+
+  const levels =
+    recentLevels(
+      candles
+    );
+
 
   let entry;
 
@@ -1631,13 +2642,29 @@ function buildTradePlan(
 
   let tp3;
 
-  if (direction === "BULLISH") {
 
-    // Pullback entry
+  // ==========================================================
+  // BULLISH
+  // ==========================================================
+
+  if (
+    direction ===
+    "BULLISH"
+  ) {
+
+    const structuralEntry =
+      Math.max(
+
+        levels.low,
+
+        currentPrice -
+          atrValue *
+          CONFIG.ATR_ENTRY_MULTIPLIER
+
+      );
+
     entry =
-      currentPrice -
-      atrValue *
-      CONFIG.ATR_ENTRY_MULTIPLIER;
+      structuralEntry;
 
     sl =
       entry -
@@ -1645,26 +2672,49 @@ function buildTradePlan(
       CONFIG.ATR_SL_MULTIPLIER;
 
     const risk =
-      entry - sl;
+      entry -
+      sl;
 
     tp1 =
       entry +
-      risk * 1.50;
+      risk *
+      1.50;
 
     tp2 =
       entry +
-      risk * 2.20;
+      risk *
+      2.20;
 
     tp3 =
       entry +
-      risk * 3.00;
+      risk *
+      3.00;
 
-  } else if (direction === "BEARISH") {
+  }
+
+
+  // ==========================================================
+  // BEARISH
+  // ==========================================================
+
+  else if (
+    direction ===
+    "BEARISH"
+  ) {
+
+    const structuralEntry =
+      Math.min(
+
+        levels.high,
+
+        currentPrice +
+          atrValue *
+          CONFIG.ATR_ENTRY_MULTIPLIER
+
+      );
 
     entry =
-      currentPrice +
-      atrValue *
-      CONFIG.ATR_ENTRY_MULTIPLIER;
+      structuralEntry;
 
     sl =
       entry +
@@ -1672,43 +2722,60 @@ function buildTradePlan(
       CONFIG.ATR_SL_MULTIPLIER;
 
     const risk =
-      sl - entry;
+      sl -
+      entry;
 
     tp1 =
       entry -
-      risk * 1.50;
+      risk *
+      1.50;
 
     tp2 =
       entry -
-      risk * 2.20;
+      risk *
+      2.20;
 
     tp3 =
       entry -
-      risk * 3.00;
+      risk *
+      3.00;
 
-  } else {
+  }
+
+
+  else {
 
     return {
+
       valid: false,
-      reason: "No direction"
+
+      reason:
+        "No direction"
+
     };
 
   }
 
+
   const distance =
     Math.abs(
-      currentPrice - entry
+      currentPrice -
+      entry
     );
 
   const distanceAtr =
-    distance / atrValue;
+    distance /
+    atrValue;
 
   const distancePercent =
-    (distance / currentPrice) *
-    100;
+    (
+      distance /
+      currentPrice
+    ) * 100;
+
 
   // ==========================================================
-  // V6.4 ENTRY DISTANCE FILTER
+  // ENTRY DISTANCE
   // ==========================================================
 
   if (
@@ -1727,7 +2794,8 @@ function buildTradePlan(
 
       entry,
 
-      atr: atrValue,
+      atr:
+        atrValue,
 
       entryDistance:
         distance,
@@ -1741,6 +2809,7 @@ function buildTradePlan(
     };
 
   }
+
 
   if (
     distancePercent >
@@ -1758,7 +2827,8 @@ function buildTradePlan(
 
       entry,
 
-      atr: atrValue,
+      atr:
+        atrValue,
 
       entryDistance:
         distance,
@@ -1772,6 +2842,7 @@ function buildTradePlan(
     };
 
   }
+
 
   if (
     distanceAtr <
@@ -1789,7 +2860,8 @@ function buildTradePlan(
 
       entry,
 
-      atr: atrValue,
+      atr:
+        atrValue,
 
       entryDistance:
         distance,
@@ -1804,16 +2876,28 @@ function buildTradePlan(
 
   }
 
+
+  // ==========================================================
+  // RISK
+  // ==========================================================
+
   const risk =
-    Math.abs(entry - sl);
+    Math.abs(
+      entry -
+      sl
+    );
 
   const reward =
-    Math.abs(tp1 - entry);
+    Math.abs(
+      tp1 -
+      entry
+    );
 
   const rr =
     risk > 0
       ? reward / risk
       : 0;
+
 
   if (
     rr <
@@ -1845,17 +2929,22 @@ function buildTradePlan(
 
   }
 
-  // Geometry check
-  if (direction === "BULLISH") {
 
-    if (
-      !(
-        sl < entry &&
-        entry < tp1 &&
-        tp1 < tp2 &&
-        tp2 < tp3
-      )
-    ) {
+  // ==========================================================
+  // GEOMETRY
+  // ==========================================================
+
+  if (
+    direction ===
+    "BULLISH"
+  ) {
+
+    if (!(
+      sl < entry &&
+      entry < tp1 &&
+      tp1 < tp2 &&
+      tp2 < tp3
+    )) {
 
       return {
 
@@ -1870,16 +2959,18 @@ function buildTradePlan(
 
   }
 
-  if (direction === "BEARISH") {
 
-    if (
-      !(
-        sl > entry &&
-        entry > tp1 &&
-        tp1 > tp2 &&
-        tp2 > tp3
-      )
-    ) {
+  if (
+    direction ===
+    "BEARISH"
+  ) {
+
+    if (!(
+      sl > entry &&
+      entry > tp1 &&
+      tp1 > tp2 &&
+      tp2 > tp3
+    )) {
 
       return {
 
@@ -1894,44 +2985,58 @@ function buildTradePlan(
 
   }
 
+
   return {
 
     valid: true,
 
-    currentPrice,
+    currentPrice:
+
+      round(
+        currentPrice,
+        CONFIG.PRICE_DECIMALS
+      ),
 
     entry:
+
       round(
         entry,
         CONFIG.PRICE_DECIMALS
       ),
 
     sl:
+
       round(
         sl,
         CONFIG.PRICE_DECIMALS
       ),
 
     tp1:
+
       round(
         tp1,
         CONFIG.PRICE_DECIMALS
       ),
 
     tp2:
+
       round(
         tp2,
         CONFIG.PRICE_DECIMALS
       ),
 
     tp3:
+
       round(
         tp3,
         CONFIG.PRICE_DECIMALS
       ),
 
     rr:
-      round(rr, 2),
+      round(
+        rr,
+        2
+      ),
 
     atr:
       round(
@@ -1966,10 +3071,13 @@ function buildTradePlan(
 // SIGNAL ENGINE
 // ============================================================
 
-async function generateSignal(env) {
+async function generateSignal(
+  env
+) {
 
   const started =
     Date.now();
+
 
   const fastCandles =
     await getTimeSeries(
@@ -1978,6 +3086,7 @@ async function generateSignal(env) {
       CONFIG.OUTPUT_SIZE_FAST
     );
 
+
   const slowCandles =
     await getTimeSeries(
       env,
@@ -1985,20 +3094,24 @@ async function generateSignal(env) {
       CONFIG.OUTPUT_SIZE_SLOW
     );
 
+
   const currentPrice =
     fastCandles[
       fastCandles.length - 1
     ].close;
+
 
   const fast =
     analyzeTimeframe(
       fastCandles
     );
 
+
   const slow =
     analyzeTimeframe(
       slowCandles
     );
+
 
   const scoring =
     calculateScore(
@@ -2006,22 +3119,35 @@ async function generateSignal(env) {
       slow
     );
 
+
   const news =
     CONFIG.NEWS_FILTER_ENABLED
+
       ? await getLiveNews()
+
       : {
-          feedStatus: "disabled",
-          blocked: false,
-          message: "News filter disabled."
+
+          feedStatus:
+            "disabled",
+
+          blocked:
+            false,
+
+          message:
+            "News filter disabled."
+
         };
 
+
   // ==========================================================
-  // NEWS BLOCK
+  // NEWS
   // ==========================================================
 
   if (
+
     CONFIG.NEWS_FILTER_ENABLED &&
     news.blocked
+
   ) {
 
     return {
@@ -2036,7 +3162,10 @@ async function generateSignal(env) {
         new Date().toISOString(),
 
       price:
-        round(currentPrice, 4),
+        round(
+          currentPrice,
+          4
+        ),
 
       signal:
         "WAIT",
@@ -2059,14 +3188,17 @@ async function generateSignal(env) {
 
       news,
 
-      tradePlan: null,
+      tradePlan:
+        null,
 
       executionMs:
-        Date.now() - started
+        Date.now() -
+        started
 
     };
 
   }
+
 
   // ==========================================================
   // SCORE
@@ -2089,7 +3221,10 @@ async function generateSignal(env) {
         new Date().toISOString(),
 
       price:
-        round(currentPrice, 4),
+        round(
+          currentPrice,
+          4
+        ),
 
       signal:
         "WAIT",
@@ -2112,17 +3247,20 @@ async function generateSignal(env) {
 
       news,
 
-      tradePlan: null,
+      tradePlan:
+        null,
 
       executionMs:
-        Date.now() - started
+        Date.now() -
+        started
 
     };
 
   }
 
+
   // ==========================================================
-  // DIRECTION LEAD
+  // LEAD
   // ==========================================================
 
   if (
@@ -2142,7 +3280,10 @@ async function generateSignal(env) {
         new Date().toISOString(),
 
       price:
-        round(currentPrice, 4),
+        round(
+          currentPrice,
+          4
+        ),
 
       signal:
         "WAIT",
@@ -2165,19 +3306,27 @@ async function generateSignal(env) {
 
       news,
 
-      tradePlan: null,
+      tradePlan:
+        null,
 
       executionMs:
-        Date.now() - started
+        Date.now() -
+        started
 
     };
 
   }
 
-  if (
-    scoring.direction !== "BULLISH" &&
-    scoring.direction !== "BEARISH"
-  ) {
+
+  // ==========================================================
+  // MANDATORY DIRECTION CONFIRMATION
+  // ==========================================================
+
+  if (!directionConfirmed(
+    scoring.direction,
+    fast,
+    slow
+  )) {
 
     return {
 
@@ -2191,13 +3340,16 @@ async function generateSignal(env) {
         new Date().toISOString(),
 
       price:
-        round(currentPrice, 4),
+        round(
+          currentPrice,
+          4
+        ),
 
       signal:
         "WAIT",
 
       reason:
-        "No confirmed market direction.",
+        "15M + 1H technical confirmation is incomplete.",
 
       score:
         scoring.score,
@@ -2214,14 +3366,17 @@ async function generateSignal(env) {
 
       news,
 
-      tradePlan: null,
+      tradePlan:
+        null,
 
       executionMs:
-        Date.now() - started
+        Date.now() -
+        started
 
     };
 
   }
+
 
   // ==========================================================
   // TRADE PLAN
@@ -2232,10 +3387,14 @@ async function generateSignal(env) {
       scoring.direction,
       currentPrice,
       fast,
-      slow
+      slow,
+      fastCandles
     );
 
-  if (!tradePlan.valid) {
+
+  if (
+    !tradePlan.valid
+  ) {
 
     return {
 
@@ -2249,7 +3408,10 @@ async function generateSignal(env) {
         new Date().toISOString(),
 
       price:
-        round(currentPrice, 4),
+        round(
+          currentPrice,
+          4
+        ),
 
       signal:
         "WAIT",
@@ -2275,16 +3437,22 @@ async function generateSignal(env) {
       tradePlan,
 
       executionMs:
-        Date.now() - started
+        Date.now() -
+        started
 
     };
 
   }
 
+
   const signal =
-    scoring.direction === "BULLISH"
+    scoring.direction ===
+    "BULLISH"
+
       ? "BUY LIMIT"
+
       : "SELL LIMIT";
+
 
   return {
 
@@ -2298,7 +3466,10 @@ async function generateSignal(env) {
       new Date().toISOString(),
 
     price:
-      round(currentPrice, 4),
+      round(
+        currentPrice,
+        4
+      ),
 
     signal,
 
@@ -2321,10 +3492,11 @@ async function generateSignal(env) {
 
     riskMessage:
       "💰 مدیریت سرمایه و کنترل ریسک را رعایت کنید.\n" +
-      "📊 این سیگنال بر اساس شرایط تکنیکال فعلی بازار تولید شده و با تغییر شرایط بازار ممکن است اعتبار آن از بین برود.",
+      "📊 این سیگنال تضمین سود نیست و اعتبار آن با تغییر شرایط بازار ممکن است از بین برود.",
 
     executionMs:
-      Date.now() - started
+      Date.now() -
+      started
 
   };
 
@@ -2340,25 +3512,44 @@ async function sendTelegram(
   message
 ) {
 
-  if (!CONFIG.TELEGRAM_ENABLED) {
+  if (
+    !CONFIG.TELEGRAM_ENABLED
+  ) {
+
     return {
+
       ok: false,
+
       skipped: true
+
     };
+
   }
 
+
   const token =
-    getEnv(env, [
-      "TELEGRAM_BOT_TOKEN",
-      "توکن_ربات_تلگرام"
-    ]);
+    getEnv(
+      env,
+      [
+        "TELEGRAM_BOT_TOKEN",
+        "توکن_ربات_تلگرام"
+      ]
+    );
+
 
   const chatId =
-    getEnv(env, [
-      "TELEGRAM_CHAT_ID"
-    ]);
+    getEnv(
+      env,
+      [
+        "TELEGRAM_CHAT_ID"
+      ]
+    );
 
-  if (!token || !chatId) {
+
+  if (
+    !token ||
+    !chatId
+  ) {
 
     return {
 
@@ -2371,31 +3562,49 @@ async function sendTelegram(
 
   }
 
+
   const url =
     `https://api.telegram.org/bot${token}/sendMessage`;
 
+
   const response =
     await fetchWithTimeout(
+
       url,
+
       {
-        method: "POST",
+
+        method:
+          "POST",
 
         headers: {
+
           "Content-Type":
             "application/json"
+
         },
 
-        body: JSON.stringify({
-          chat_id: chatId,
-          text: message
-        })
+        body:
+          JSON.stringify({
+
+            chat_id:
+              chatId,
+
+            text:
+              message
+
+          })
 
       },
+
       CONFIG.API_TIMEOUT_MS
+
     );
+
 
   const data =
     await response.json();
+
 
   return {
 
@@ -2417,32 +3626,34 @@ async function sendTelegram(
 // TELEGRAM SIGNAL MESSAGE
 // ============================================================
 
-function formatSignalMessage(signal) {
+function formatSignalMessage(
+  signal
+) {
 
   if (
     !signal ||
-    signal.signal === "WAIT"
+    signal.signal ===
+      "WAIT"
   ) {
 
     return null;
 
   }
 
+
   const p =
     signal.tradePlan;
 
-  const direction =
-    signal.signal;
 
   return [
 
-    "💎 HAKIM GOLD SIGNALS V6.4",
+    "💎 HAKIM GOLD SIGNALS V6.5",
 
     "",
 
     "🥇 XAUUSD",
 
-    `📊 ${direction}`,
+    `📊 ${signal.signal}`,
 
     `⭐ Score: ${signal.score}/100`,
 
@@ -2470,6 +3681,12 @@ function formatSignalMessage(signal) {
 
     `📈 1H: ${signal.slow.trend}`,
 
+    `💪 ADX: ${round(signal.fast.adx14, 1)}`,
+
+    `📊 DI Spread: ${round(signal.fast.diSpread, 1)}`,
+
+    `📉 RSI: ${round(signal.fast.rsi14, 1)}`,
+
     `📰 News: ${
       signal.news.blocked
         ? "BLOCKED"
@@ -2490,7 +3707,7 @@ function formatSignalMessage(signal) {
 
 
 // ============================================================
-// TELEGRAM NEWS ALERT
+// TELEGRAM NEWS
 // ============================================================
 
 async function sendNewsAlert(
@@ -2506,6 +3723,7 @@ async function sendNewsAlert(
 
   }
 
+
   if (
     !news ||
     !news.nextEvent
@@ -2515,11 +3733,14 @@ async function sendNewsAlert(
 
   }
 
+
   const event =
     news.nextEvent;
 
+
   const key =
     `${event.title}-${event.timestamp}`;
+
 
   if (
     memorySentNews.has(key)
@@ -2529,29 +3750,38 @@ async function sendNewsAlert(
 
   }
 
+
   const diff =
     event.timestamp -
     Date.now();
 
+
   if (
+
     diff < 0 ||
     diff >
       CONFIG.NEWS_ALERT_BEFORE_MINUTES *
       60 *
       1000
+
   ) {
 
     return;
 
   }
 
+
   const minutes =
     Math.max(
+
       0,
+
       Math.round(
         diff / 60000
       )
+
     );
+
 
   const message = [
 
@@ -2575,24 +3805,36 @@ async function sendNewsAlert(
 
   ].join("\n");
 
+
   const result =
     await sendTelegram(
       env,
       message
     );
 
-  if (result.ok) {
 
-    memorySentNews.add(key);
+  if (
+    result.ok
+  ) {
+
+    memorySentNews.add(
+      key
+    );
 
     if (
-      memorySentNews.size > 100
+      memorySentNews.size >
+      100
     ) {
 
       const first =
-        memorySentNews.values().next().value;
+        memorySentNews
+          .values()
+          .next()
+          .value;
 
-      memorySentNews.delete(first);
+      memorySentNews.delete(
+        first
+      );
 
     }
 
@@ -2623,6 +3865,7 @@ async function healthResponse() {
     intervals: [
 
       CONFIG.INTERVAL_FAST,
+
       CONFIG.INTERVAL_SLOW
 
     ],
@@ -2660,14 +3903,18 @@ async function newsResponse() {
 // SIGNAL RESPONSE
 // ============================================================
 
-async function signalResponse(env) {
+async function signalResponse(
+  env
+) {
 
   try {
 
     const signal =
-      await generateSignal(env);
+      await generateSignal(
+        env
+      );
 
-    // Telegram news alert
+
     if (
       signal.news
     ) {
@@ -2679,27 +3926,43 @@ async function signalResponse(env) {
 
     }
 
-    // Telegram signal
+
     if (
-      signal.signal !== "WAIT" &&
+
+      signal.signal !==
+        "WAIT" &&
+
       CONFIG.TELEGRAM_SIGNAL_ENABLED
+
     ) {
 
       const message =
-        formatSignalMessage(signal);
+        formatSignalMessage(
+          signal
+        );
+
 
       const signalKey =
         [
+
           signal.signal,
+
           signal.tradePlan?.entry,
+
           signal.tradePlan?.sl,
+
           signal.tradePlan?.tp1
+
         ].join("|");
 
+
       if (
+
         message &&
+
         signalKey !==
           memoryLastSignalKey
+
       ) {
 
         const result =
@@ -2708,7 +3971,10 @@ async function signalResponse(env) {
             message
           );
 
-        if (result.ok) {
+
+        if (
+          result.ok
+        ) {
 
           memoryLastSignalKey =
             signalKey;
@@ -2719,9 +3985,14 @@ async function signalResponse(env) {
 
     }
 
-    return Response.json(signal);
 
-  } catch (error) {
+    return Response.json(
+      signal
+    );
+
+  } catch (
+    error
+  ) {
 
     return Response.json({
 
@@ -2741,7 +4012,9 @@ async function signalResponse(env) {
         new Date().toISOString()
 
     }, {
+
       status: 500
+
     });
 
   }
@@ -2769,7 +4042,9 @@ content="width=device-width,initial-scale=1">
 <meta name="theme-color"
 content="#12163a">
 
-<title>FX · موتور سیگنال فارکس V6.4</title>
+<title>
+FX · موتور سیگنال فارکس V6.5
+</title>
 
 <style>
 
@@ -2981,18 +4256,20 @@ pre{
 <header>
 
 <h1>
-FX · موتور سیگنال فارکس V6.4
+FX · موتور سیگنال فارکس V6.5
 </h1>
 
 <div class="sub">
-Gold Priority · XAU/USD · 15M + 1H
+Gold Quality · XAU/USD · 15M + 1H
 </div>
 
 </header>
 
 <div class="card">
 
-<button onclick="loadSignal()">
+<button
+onclick="loadSignal()"
+>
 🔄 بروزرسانی سیگنال
 </button>
 
@@ -3038,7 +4315,9 @@ async function loadSignal(){
   }catch(error){
 
     box.innerHTML =
-      "<div class='bad'>خطا در دریافت سیگنال</div>";
+      "<div class='bad'>" +
+      "خطا در دریافت سیگنال" +
+      "</div>";
 
   }
 
@@ -3050,14 +4329,17 @@ function esc(value){
   return String(
     value ?? "-"
   )
+
   .replace(
     /&/g,
     "&amp;"
   )
+
   .replace(
     /</g,
     "&lt;"
   )
+
   .replace(
     />/g,
     "&gt;"
@@ -3073,13 +4355,17 @@ function render(data){
       "result"
     );
 
+
   if(
-    data.signal === "WAIT"
+    data.signal ===
+    "WAIT"
   ){
 
     box.innerHTML =
 
-      "<h2 class='wait'>⏸ WAIT</h2>" +
+      "<h2 class='wait'>" +
+      "⏸ WAIT" +
+      "</h2>" +
 
       "<p>" +
       esc(
@@ -3110,14 +4396,21 @@ function render(data){
         data.slow?.trend
       ) +
 
+      item(
+        "ADX",
+        data.fast?.adx14
+      ) +
+
       "</div>";
 
     return;
 
   }
 
+
   const p =
     data.tradePlan;
+
 
   box.innerHTML =
 
@@ -3135,7 +4428,8 @@ function render(data){
 
     item(
       "Score",
-      data.score + "/100"
+      data.score +
+      "/100"
     ) +
 
     item(
@@ -3146,6 +4440,21 @@ function render(data){
     item(
       "1H",
       data.slow?.trend
+    ) +
+
+    item(
+      "ADX",
+      data.fast?.adx14
+    ) +
+
+    item(
+      "DI Spread",
+      data.fast?.diSpread
+    ) +
+
+    item(
+      "RSI",
+      data.fast?.rsi14
     ) +
 
     item(
@@ -3200,7 +4509,7 @@ function render(data){
 
     "💰 مدیریت سرمایه و کنترل ریسک را رعایت کنید." +
 
-    "\\n📊 این سیگنال بر اساس شرایط تکنیکال فعلی بازار تولید شده و با تغییر شرایط بازار ممکن است اعتبار آن از بین برود." +
+    "\\n📊 این سیگنال تضمین سود نیست و با تغییر شرایط بازار ممکن است اعتبار آن از بین برود." +
 
     "</pre>" +
 
@@ -3209,7 +4518,10 @@ function render(data){
 }
 
 
-function item(label,value){
+function item(
+  label,
+  value
+){
 
   return (
 
@@ -3232,6 +4544,7 @@ function item(label,value){
 
 loadSignal();
 
+
 setInterval(
   loadSignal,
   30000
@@ -3250,7 +4563,9 @@ setInterval(
 // CORS
 // ============================================================
 
-function withCors(response) {
+function withCors(
+  response
+) {
 
   const headers =
     new Headers(
@@ -3273,8 +4588,11 @@ function withCors(response) {
   );
 
   return new Response(
+
     response.body,
+
     {
+
       status:
         response.status,
 
@@ -3282,7 +4600,9 @@ function withCors(response) {
         response.statusText,
 
       headers
+
     }
+
   );
 
 }
@@ -3294,55 +4614,77 @@ function withCors(response) {
 
 export default {
 
-  async fetch(request, env) {
+  async fetch(
+    request,
+    env
+  ) {
 
     const url =
-      new URL(request.url);
+      new URL(
+        request.url
+      );
+
 
     if (
-      request.method === "OPTIONS"
+      request.method ===
+      "OPTIONS"
     ) {
 
       return withCors(
+
         new Response(
           null,
           {
             status: 204
           }
         )
+
       );
 
     }
 
+
     try {
 
-      // -------------------------
+
+      // ======================================================
       // HOME
-      // -------------------------
+      // ======================================================
 
       if (
+
         url.pathname === "/" ||
         url.pathname === ""
+
       ) {
 
         return new Response(
+
           renderHomepage(),
+
           {
+
             headers: {
+
               "Content-Type":
                 "text/html; charset=UTF-8"
+
             }
+
           }
+
         );
 
       }
 
-      // -------------------------
+
+      // ======================================================
       // HEALTH
-      // -------------------------
+      // ======================================================
 
       if (
-        url.pathname === "/health"
+        url.pathname ===
+        "/health"
       ) {
 
         return withCors(
@@ -3351,12 +4693,14 @@ export default {
 
       }
 
-      // -------------------------
+
+      // ======================================================
       // NEWS
-      // -------------------------
+      // ======================================================
 
       if (
-        url.pathname === "/api/news"
+        url.pathname ===
+        "/api/news"
       ) {
 
         return withCors(
@@ -3365,60 +4709,80 @@ export default {
 
       }
 
-      // -------------------------
+
+      // ======================================================
       // SIGNAL
-      // -------------------------
+      // ======================================================
 
       if (
-        url.pathname === "/api/signals"
+        url.pathname ===
+        "/api/signals"
       ) {
 
         return withCors(
-          await signalResponse(env)
+          await signalResponse(
+            env
+          )
         );
 
       }
 
-      // -------------------------
+
+      // ======================================================
       // TELEGRAM TEST
-      // -------------------------
+      // ======================================================
 
       if (
-        url.pathname === "/telegram-test"
+        url.pathname ===
+        "/telegram-test"
       ) {
 
         const result =
           await sendTelegram(
+
             env,
-            "💎 Hakim Gold Signals V6.4\n\n✅ Telegram connection test successful."
+
+            "💎 Hakim Gold Signals V6.5\n\n✅ Telegram connection test successful."
+
           );
 
         return withCors(
-          Response.json(result)
+          Response.json(
+            result
+          )
         );
 
       }
 
-      // -------------------------
+
+      // ======================================================
       // TELEGRAM STATUS
-      // -------------------------
+      // ======================================================
 
       if (
-        url.pathname === "/telegram-status"
+        url.pathname ===
+        "/telegram-status"
       ) {
 
         const token =
-          getEnv(env, [
-            "TELEGRAM_BOT_TOKEN",
-            "توکن_ربات_تلگرام"
-          ]);
+          getEnv(
+            env,
+            [
+              "TELEGRAM_BOT_TOKEN",
+              "توکن_ربات_تلگرام"
+            ]
+          );
 
         const chatId =
-          getEnv(env, [
-            "TELEGRAM_CHAT_ID"
-          ]);
+          getEnv(
+            env,
+            [
+              "TELEGRAM_CHAT_ID"
+            ]
+          );
 
         return withCors(
+
           Response.json({
 
             telegram:
@@ -3433,54 +4797,80 @@ export default {
               Boolean(chatId)
 
           })
+
         );
 
       }
 
-      // -------------------------
+
+      // ======================================================
       // 404
-      // -------------------------
+      // ======================================================
 
       return withCors(
-        Response.json({
 
-          ok: false,
+        Response.json(
 
-          error:
-            "Not found",
+          {
 
-          routes: [
+            ok: false,
 
-            "/",
-            "/health",
-            "/api/signals",
-            "/api/news",
-            "/telegram-test",
-            "/telegram-status"
+            error:
+              "Not found",
 
-          ]
+            routes: [
 
-        }, {
-          status: 404
-        })
+              "/",
+
+              "/health",
+
+              "/api/signals",
+
+              "/api/news",
+
+              "/telegram-test",
+
+              "/telegram-status"
+
+            ]
+
+          },
+
+          {
+            status: 404
+          }
+
+        )
+
       );
 
-    } catch (error) {
+
+    } catch (
+      error
+    ) {
 
       return withCors(
-        Response.json({
 
-          ok: false,
+        Response.json(
 
-          error:
-            String(
-              error?.message ||
-              error
-            )
+          {
 
-        }, {
-          status: 500
-        })
+            ok: false,
+
+            error:
+              String(
+                error?.message ||
+                error
+              )
+
+          },
+
+          {
+            status: 500
+          }
+
+        )
+
       );
 
     }
