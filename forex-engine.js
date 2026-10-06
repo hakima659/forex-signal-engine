@@ -1,11 +1,15 @@
 // ============================================================
-// FOREX SIGNAL ENGINE V7.0.2 — GOLD QUALITY
+// FOREX SIGNAL ENGINE V7.0.3 — GOLD QUALITY
 // Cloudflare Worker + Twelve Data + Telegram
 //
 // PRIMARY: XAU/USD
 // TIMEFRAMES: 15M + 1H
 //
-// V7.0.2:
+// V7.0.3:
+// - Fixed candle freshness detection
+// - Current 15M/1H candles are no longer falsely marked stale
+// - Interval-aware freshness validation
+// - Allows current candle + previous candle with API lag tolerance
 // - Relaxed but still quality-first signal filtering
 // - Strict 1H trend confirmation
 // - Flexible 15M confirmation
@@ -20,7 +24,7 @@
 // ============================================================
 
 const CONFIG = {
-  VERSION: "V7.0.2",
+  VERSION: "V7.0.3",
 
   SYMBOL: "XAU/USD",
 
@@ -77,11 +81,31 @@ const CONFIG = {
 
   // ----------------------------------------------------------
   // DATA FRESHNESS
+  //
+  // Important:
+  // We do NOT compare candle-open time directly against a
+  // tiny raw-age threshold.
+  //
+  // Example:
+  // A 15M candle opened at 16:30 is still the CURRENT candle
+  // at 16:41 and must NOT be called stale.
+  //
+  // Current candle is accepted.
+  // Previous candle is accepted only within one interval plus
+  // a reasonable provider/API delay tolerance.
   // ----------------------------------------------------------
 
-  MAX_FAST_AGE_SECONDS: 180,
+  FRESHNESS: {
+    "15min": {
+      intervalSeconds: 900,
+      maxDelaySeconds: 240
+    },
 
-  MAX_SLOW_AGE_SECONDS: 480,
+    "1h": {
+      intervalSeconds: 3600,
+      maxDelaySeconds: 600
+    }
+  },
 
   // ----------------------------------------------------------
   // ATR
@@ -143,7 +167,10 @@ function nowIso() {
 
 function safeNumber(value, fallback = 0) {
   const n = Number(value);
-  return Number.isFinite(n) ? n : fallback;
+
+  return Number.isFinite(n)
+    ? n
+    : fallback;
 }
 
 function round(value, digits = 2) {
@@ -159,7 +186,10 @@ function round(value, digits = 2) {
 }
 
 function clamp(value, min, max) {
-  return Math.max(min, Math.min(max, value));
+  return Math.max(
+    min,
+    Math.min(max, value)
+  );
 }
 
 function sleep(ms) {
@@ -245,13 +275,19 @@ function getTelegramChatId(env) {
 // TELEGRAM API
 // ============================================================
 
-async function telegramApi(env, method, body = null) {
-  const token = getTelegramToken(env);
+async function telegramApi(
+  env,
+  method,
+  body = null
+) {
+  const token =
+    getTelegramToken(env);
 
   if (!token) {
     return {
       ok: false,
-      error: "TELEGRAM_BOT_TOKEN is missing"
+      error:
+        "TELEGRAM_BOT_TOKEN is missing"
     };
   }
 
@@ -259,22 +295,38 @@ async function telegramApi(env, method, body = null) {
     `https://api.telegram.org/bot${encodeURIComponent(token)}/${method}`;
 
   try {
-    const response = await fetch(url, {
-      method: body ? "POST" : "GET",
-      headers: body
-        ? {
-            "content-type": "application/json"
-          }
-        : undefined,
-      body: body ? JSON.stringify(body) : undefined
-    });
+    const response =
+      await fetch(
+        url,
+        {
+          method:
+            body
+              ? "POST"
+              : "GET",
 
-    const text = await response.text();
+          headers:
+            body
+              ? {
+                  "content-type":
+                    "application/json"
+                }
+              : undefined,
+
+          body:
+            body
+              ? JSON.stringify(body)
+              : undefined
+        }
+      );
+
+    const text =
+      await response.text();
 
     let data;
 
     try {
-      data = JSON.parse(text);
+      data =
+        JSON.parse(text);
     } catch {
       data = {
         ok: false,
@@ -285,15 +337,21 @@ async function telegramApi(env, method, body = null) {
     if (!response.ok) {
       return {
         ok: false,
-        httpStatus: response.status,
-        telegram: data
+        httpStatus:
+          response.status,
+        telegram:
+          data
       };
     }
 
-    if (data && data.ok === false) {
+    if (
+      data &&
+      data.ok === false
+    ) {
       return {
         ok: false,
-        telegram: data
+        telegram:
+          data
       };
     }
 
@@ -301,9 +359,10 @@ async function telegramApi(env, method, body = null) {
   } catch (error) {
     return {
       ok: false,
-      error: error instanceof Error
-        ? error.message
-        : String(error)
+      error:
+        error instanceof Error
+          ? error.message
+          : String(error)
     };
   }
 }
@@ -313,12 +372,17 @@ async function telegramApi(env, method, body = null) {
 // SEND TELEGRAM MESSAGE
 // ============================================================
 
-async function sendTelegramToChat(env, text, options = {}) {
+async function sendTelegramToChat(
+  env,
+  text,
+  options = {}
+) {
   if (!CONFIG.TELEGRAM_ENABLED) {
     return {
       ok: false,
       skipped: true,
-      reason: "Telegram disabled"
+      reason:
+        "Telegram disabled"
     };
   }
 
@@ -329,18 +393,25 @@ async function sendTelegramToChat(env, text, options = {}) {
   if (!chatId) {
     return {
       ok: false,
-      error: "TELEGRAM_CHAT_ID is missing"
+      error:
+        "TELEGRAM_CHAT_ID is missing"
     };
   }
 
   const payload = {
-    chat_id: String(chatId),
-    text: String(text),
-    disable_web_page_preview: true
+    chat_id:
+      String(chatId),
+
+    text:
+      String(text),
+
+    disable_web_page_preview:
+      true
   };
 
   if (options.parse_mode) {
-    payload.parse_mode = options.parse_mode;
+    payload.parse_mode =
+      options.parse_mode;
   }
 
   return await telegramApi(
@@ -355,8 +426,12 @@ async function sendTelegramToChat(env, text, options = {}) {
 // TWELVE DATA
 // ============================================================
 
-async function twelveDataRequest(env, interval) {
-  const apiKey = getTwelveDataKey(env);
+async function twelveDataRequest(
+  env,
+  interval
+) {
+  const apiKey =
+    getTwelveDataKey(env);
 
   if (!apiKey) {
     throw new Error(
@@ -364,31 +439,63 @@ async function twelveDataRequest(env, interval) {
     );
   }
 
-  const params = new URLSearchParams();
+  const params =
+    new URLSearchParams();
 
-  params.set("symbol", CONFIG.SYMBOL);
-  params.set("interval", interval);
-  params.set("outputsize", String(CONFIG.OUTPUTSIZE));
-  params.set("apikey", apiKey);
-  params.set("format", "JSON");
-  params.set("timezone", "UTC");
+  params.set(
+    "symbol",
+    CONFIG.SYMBOL
+  );
+
+  params.set(
+    "interval",
+    interval
+  );
+
+  params.set(
+    "outputsize",
+    String(CONFIG.OUTPUTSIZE)
+  );
+
+  params.set(
+    "apikey",
+    apiKey
+  );
+
+  params.set(
+    "format",
+    "JSON"
+  );
+
+  params.set(
+    "timezone",
+    "UTC"
+  );
 
   const url =
     `https://api.twelvedata.com/time_series?${params.toString()}`;
 
-  const response = await fetch(url, {
-    method: "GET",
-    headers: {
-      "accept": "application/json"
-    }
-  });
+  const response =
+    await fetch(
+      url,
+      {
+        method: "GET",
 
-  const text = await response.text();
+        headers: {
+          "accept":
+            "application/json"
+        }
+      }
+    );
+
+  const text =
+    await response.text();
 
   let data;
 
   try {
-    data = JSON.parse(text);
+    data =
+      JSON.parse(text);
   } catch {
     throw new Error(
       `Twelve Data invalid JSON: ${text.slice(0, 300)}`
@@ -401,14 +508,20 @@ async function twelveDataRequest(env, interval) {
     );
   }
 
-  if (data.status === "error") {
+  if (
+    data.status === "error"
+  ) {
     throw new Error(
       data.message ||
       "Twelve Data returned error"
     );
   }
 
-  if (!Array.isArray(data.values)) {
+  if (
+    !Array.isArray(
+      data.values
+    )
+  ) {
     throw new Error(
       "Twelve Data returned no values"
     );
@@ -419,18 +532,85 @@ async function twelveDataRequest(env, interval) {
 
 
 // ============================================================
+// UTC DATETIME PARSER
+//
+// Twelve Data is requested in UTC.
+// This parser makes the timestamp handling explicit instead
+// of relying on runtime-specific parsing of "YYYY-MM-DD HH:mm:ss".
+// ============================================================
+
+function parseUtcTimestamp(value) {
+  const text =
+    String(value || "").trim();
+
+  if (!text) {
+    return 0;
+  }
+
+  // Already contains Z.
+  if (/Z$/i.test(text)) {
+    const ts =
+      Date.parse(text);
+
+    return Number.isFinite(ts)
+      ? ts
+      : 0;
+  }
+
+  // Already contains timezone offset.
+  if (
+    /[+-]\d{2}:\d{2}$/.test(text)
+  ) {
+    const ts =
+      Date.parse(text);
+
+    return Number.isFinite(ts)
+      ? ts
+      : 0;
+  }
+
+  // Twelve Data UTC format:
+  // YYYY-MM-DD HH:mm:ss
+  const normalized =
+    text.includes("T")
+      ? `${text}Z`
+      : `${text.replace(" ", "T")}Z`;
+
+  const ts =
+    Date.parse(normalized);
+
+  return Number.isFinite(ts)
+    ? ts
+    : 0;
+}
+
+
+// ============================================================
 // NORMALIZE CANDLES
 // ============================================================
 
 function normalizeCandles(values) {
   return values
     .map(item => ({
-      datetime: String(item.datetime || ""),
-      open: safeNumber(item.open),
-      high: safeNumber(item.high),
-      low: safeNumber(item.low),
-      close: safeNumber(item.close),
-      volume: safeNumber(item.volume)
+      datetime:
+        String(
+          item.datetime || ""
+        ),
+
+      open:
+        safeNumber(item.open),
+
+      high:
+        safeNumber(item.high),
+
+      low:
+        safeNumber(item.low),
+
+      close:
+        safeNumber(item.close),
+
+      volume:
+        safeNumber(item.volume)
     }))
     .filter(c =>
       c.open > 0 &&
@@ -440,8 +620,12 @@ function normalizeCandles(values) {
     )
     .sort(
       (a, b) =>
-        new Date(a.datetime).getTime() -
-        new Date(b.datetime).getTime()
+        parseUtcTimestamp(
+          a.datetime
+        ) -
+        parseUtcTimestamp(
+          b.datetime
+        )
     );
 }
 
@@ -450,12 +634,19 @@ function normalizeCandles(values) {
 // CACHE HELPERS
 // ============================================================
 
-async function getCandles(env, interval, forceRefresh = false) {
+async function getCandles(
+  env,
+  interval,
+  forceRefresh = false
+) {
   const isFast =
-    interval === CONFIG.INTERVAL_FAST;
+    interval ===
+    CONFIG.INTERVAL_FAST;
 
   const cacheKey =
-    isFast ? "fast" : "slow";
+    isFast
+      ? "fast"
+      : "slow";
 
   const cacheAge =
     isFast
@@ -467,14 +658,17 @@ async function getCandles(env, interval, forceRefresh = false) {
 
   const cachedAt =
     MEMORY_CACHE[
-      isFast ? "fastAt" : "slowAt"
+      isFast
+        ? "fastAt"
+        : "slowAt"
     ];
 
   if (
     !forceRefresh &&
     cached &&
     cachedAt &&
-    nowMs() - cachedAt < cacheAge
+    nowMs() - cachedAt <
+      cacheAge
   ) {
     return cached;
   }
@@ -487,23 +681,34 @@ async function getCandles(env, interval, forceRefresh = false) {
       );
 
     const candles =
-      normalizeCandles(raw.values);
+      normalizeCandles(
+        raw.values
+      );
 
-    if (candles.length < 60) {
+    if (
+      candles.length < 60
+    ) {
       throw new Error(
         `Not enough ${interval} candles`
       );
     }
 
-    MEMORY_CACHE[cacheKey] = candles;
+    MEMORY_CACHE[cacheKey] =
+      candles;
 
     MEMORY_CACHE[
-      isFast ? "fastAt" : "slowAt"
-    ] = nowMs();
+      isFast
+        ? "fastAt"
+        : "slowAt"
+    ] =
+      nowMs();
 
     return candles;
   } catch (error) {
-    if (cached && cached.length >= 60) {
+    if (
+      cached &&
+      cached.length >= 60
+    ) {
       return cached;
     }
 
@@ -517,24 +722,34 @@ async function getCandles(env, interval, forceRefresh = false) {
 // ============================================================
 
 function candleTimestamp(candle) {
-  const t =
-    new Date(candle.datetime).getTime();
+  if (!candle) {
+    return 0;
+  }
 
-  return Number.isFinite(t)
-    ? t
-    : 0;
+  return parseUtcTimestamp(
+    candle.datetime
+  );
 }
 
-function getDataAgeSeconds(candles) {
-  if (!candles || !candles.length) {
+function getDataAgeSeconds(
+  candles
+) {
+  if (
+    !candles ||
+    !candles.length
+  ) {
     return Infinity;
   }
 
   const latest =
-    candles[candles.length - 1];
+    candles[
+      candles.length - 1
+    ];
 
   const ts =
-    candleTimestamp(latest);
+    candleTimestamp(
+      latest
+    );
 
   if (!ts) {
     return Infinity;
@@ -546,27 +761,430 @@ function getDataAgeSeconds(candles) {
   );
 }
 
-function freshnessCheck(fast, slow) {
-  const fastAge =
-    getDataAgeSeconds(fast);
+function getFreshnessPolicy(
+  interval
+) {
+  const policy =
+    CONFIG.FRESHNESS[
+      interval
+    ];
 
-  const slowAge =
-    getDataAgeSeconds(slow);
+  if (policy) {
+    return policy;
+  }
+
+  return {
+    intervalSeconds:
+      interval === "1h"
+        ? 3600
+        : 900,
+
+    maxDelaySeconds:
+      interval === "1h"
+        ? 600
+        : 240
+  };
+}
+
+function freshnessForCandle(
+  candles,
+  interval,
+  now = nowMs()
+) {
+  const policy =
+    getFreshnessPolicy(
+      interval
+    );
+
+  if (
+    !candles ||
+    !candles.length
+  ) {
+    return {
+      ok: false,
+
+      interval,
+
+      intervalSeconds:
+        policy.intervalSeconds,
+
+      maxDelaySeconds:
+        policy.maxDelaySeconds,
+
+      ageSeconds:
+        Infinity,
+
+      bucketLagSeconds:
+        Infinity,
+
+      reason:
+        "No candle data"
+    };
+  }
+
+  const latest =
+    candles[
+      candles.length - 1
+    ];
+
+  const tsMs =
+    candleTimestamp(
+      latest
+    );
+
+  if (!tsMs) {
+    return {
+      ok: false,
+
+      interval,
+
+      intervalSeconds:
+        policy.intervalSeconds,
+
+      maxDelaySeconds:
+        policy.maxDelaySeconds,
+
+      ageSeconds:
+        Infinity,
+
+      bucketLagSeconds:
+        Infinity,
+
+      candleTimestamp:
+        latest.datetime,
+
+      reason:
+        "Invalid candle timestamp"
+    };
+  }
+
+  const nowSeconds =
+    Math.floor(
+      now / 1000
+    );
+
+  const candleSeconds =
+    Math.floor(
+      tsMs / 1000
+    );
+
+  const intervalSeconds =
+    policy.intervalSeconds;
+
+  const currentBucketStart =
+    Math.floor(
+      nowSeconds /
+        intervalSeconds
+    ) *
+    intervalSeconds;
+
+  const candleBucketStart =
+    Math.floor(
+      candleSeconds /
+        intervalSeconds
+    ) *
+    intervalSeconds;
+
+  const bucketLagSeconds =
+    currentBucketStart -
+    candleBucketStart;
+
+  const ageSeconds =
+    nowSeconds -
+    candleSeconds;
+
+  // Timestamp from the future beyond tolerance:
+  // considered invalid.
+  if (
+    ageSeconds <
+    -policy.maxDelaySeconds
+  ) {
+    return {
+      ok: false,
+
+      interval,
+
+      intervalSeconds,
+
+      maxDelaySeconds:
+        policy.maxDelaySeconds,
+
+      ageSeconds:
+        round(
+          ageSeconds,
+          1
+        ),
+
+      bucketLagSeconds,
+
+      candleTimestamp:
+        latest.datetime,
+
+      currentBucketStart:
+        new Date(
+          currentBucketStart * 1000
+        ).toISOString(),
+
+      candleBucketStart:
+        new Date(
+          candleBucketStart * 1000
+        ).toISOString(),
+
+      reason:
+        "Candle timestamp is in the future"
+    };
+  }
+
+  // ----------------------------------------------------------
+  // CURRENT CANDLE
+  //
+  // This is the key fix.
+  //
+  // A candle in the current interval is considered fresh even
+  // though its opening timestamp may be many minutes old.
+  // ----------------------------------------------------------
+
+  if (
+    bucketLagSeconds === 0 &&
+    ageSeconds >= 0
+  ) {
+    return {
+      ok: true,
+
+      interval,
+
+      intervalSeconds,
+
+      maxDelaySeconds:
+        policy.maxDelaySeconds,
+
+      ageSeconds:
+        round(
+          ageSeconds,
+          1
+        ),
+
+      bucketLagSeconds: 0,
+
+      candleTimestamp:
+        latest.datetime,
+
+      currentBucketStart:
+        new Date(
+          currentBucketStart * 1000
+        ).toISOString(),
+
+      candleBucketStart:
+        new Date(
+          candleBucketStart * 1000
+        ).toISOString(),
+
+      status:
+        "current-candle",
+
+      reason:
+        "Current candle is valid"
+    };
+  }
+
+  // ----------------------------------------------------------
+  // PREVIOUS CANDLE
+  //
+  // One previous candle is acceptable only if the provider is
+  // delayed by no more than one full interval + API tolerance.
+  // ----------------------------------------------------------
+
+  const previousCandleAllowed =
+    bucketLagSeconds ===
+      intervalSeconds &&
+    ageSeconds <=
+      intervalSeconds +
+      policy.maxDelaySeconds;
+
+  if (
+    previousCandleAllowed
+  ) {
+    return {
+      ok: true,
+
+      interval,
+
+      intervalSeconds,
+
+      maxDelaySeconds:
+        policy.maxDelaySeconds,
+
+      ageSeconds:
+        round(
+          ageSeconds,
+          1
+        ),
+
+      bucketLagSeconds,
+
+      candleTimestamp:
+        latest.datetime,
+
+      currentBucketStart:
+        new Date(
+          currentBucketStart * 1000
+        ).toISOString(),
+
+      candleBucketStart:
+        new Date(
+          candleBucketStart * 1000
+        ).toISOString(),
+
+      status:
+        "previous-candle-within-tolerance",
+
+      reason:
+        "Previous candle is within allowed data delay"
+    };
+  }
+
+  // ----------------------------------------------------------
+  // STALE
+  // ----------------------------------------------------------
+
+  return {
+    ok: false,
+
+    interval,
+
+    intervalSeconds,
+
+    maxDelaySeconds:
+      policy.maxDelaySeconds,
+
+    ageSeconds:
+      round(
+        ageSeconds,
+        1
+      ),
+
+    bucketLagSeconds,
+
+    candleTimestamp:
+      latest.datetime,
+
+    currentBucketStart:
+      new Date(
+        currentBucketStart * 1000
+      ).toISOString(),
+
+    candleBucketStart:
+      new Date(
+        candleBucketStart * 1000
+      ).toISOString(),
+
+    status:
+      "stale",
+
+    reason:
+      `Latest ${interval} candle is too far behind current market interval`
+  };
+}
+
+function freshnessCheck(
+  fast,
+  slow
+) {
+  const fastFresh =
+    freshnessForCandle(
+      fast,
+      CONFIG.INTERVAL_FAST
+    );
+
+  const slowFresh =
+    freshnessForCandle(
+      slow,
+      CONFIG.INTERVAL_SLOW
+    );
+
+  let reason =
+    "Market data is fresh";
+
+  if (!fastFresh.ok) {
+    reason =
+      `15M data stale: ${fastFresh.reason}`;
+  } else if (!slowFresh.ok) {
+    reason =
+      `1H data stale: ${slowFresh.reason}`;
+  }
 
   return {
     ok:
-      fastAge <= CONFIG.MAX_FAST_AGE_SECONDS &&
-      slowAge <= CONFIG.MAX_SLOW_AGE_SECONDS,
+      fastFresh.ok &&
+      slowFresh.ok,
 
-    fastAgeSeconds: round(fastAge, 1),
+    fastAgeSeconds:
+      fastFresh.ageSeconds,
 
-    slowAgeSeconds: round(slowAge, 1),
+    slowAgeSeconds:
+      slowFresh.ageSeconds,
 
     fastLimitSeconds:
-      CONFIG.MAX_FAST_AGE_SECONDS,
+      getFreshnessPolicy(
+        CONFIG.INTERVAL_FAST
+      ).maxDelaySeconds,
 
     slowLimitSeconds:
-      CONFIG.MAX_SLOW_AGE_SECONDS
+      getFreshnessPolicy(
+        CONFIG.INTERVAL_SLOW
+      ).maxDelaySeconds,
+
+    fastIntervalSeconds:
+      fastFresh.intervalSeconds,
+
+    slowIntervalSeconds:
+      slowFresh.intervalSeconds,
+
+    fastBucketLagSeconds:
+      fastFresh.bucketLagSeconds,
+
+    slowBucketLagSeconds:
+      slowFresh.bucketLagSeconds,
+
+    fastStatus:
+      fastFresh.status ||
+      "unknown",
+
+    slowStatus:
+      slowFresh.status ||
+      "unknown",
+
+    fastCandleTimestamp:
+      fastFresh.candleTimestamp ||
+      null,
+
+    slowCandleTimestamp:
+      slowFresh.candleTimestamp ||
+      null,
+
+    fastCurrentBucketStart:
+      fastFresh.currentBucketStart ||
+      null,
+
+    slowCurrentBucketStart:
+      slowFresh.currentBucketStart ||
+      null,
+
+    fastCandleBucketStart:
+      fastFresh.candleBucketStart ||
+      null,
+
+    slowCandleBucketStart:
+      slowFresh.candleBucketStart ||
+      null,
+
+    fastReason:
+      fastFresh.reason,
+
+    slowReason:
+      slowFresh.reason,
+
+    reason
   };
 }
 
@@ -575,11 +1193,16 @@ function freshnessCheck(fast, slow) {
 // SESSION
 // ============================================================
 
-function sessionCheck(date = new Date()) {
-  if (!CONFIG.SESSION_ENABLED) {
+function sessionCheck(
+  date = new Date()
+) {
+  if (
+    !CONFIG.SESSION_ENABLED
+  ) {
     return {
       ok: true,
-      reason: "Session filter disabled"
+      reason:
+        "Session filter disabled"
     };
   }
 
@@ -595,7 +1218,8 @@ function sessionCheck(date = new Date()) {
   ) {
     return {
       ok: false,
-      reason: "Weekend"
+      reason:
+        "Weekend"
     };
   }
 
@@ -611,10 +1235,14 @@ function sessionCheck(date = new Date()) {
 
   return {
     ok,
-    reason: ok
-      ? "Inside London/New York session"
-      : "Outside London/New York session",
-    utcHour: hour
+
+    reason:
+      ok
+        ? "Inside London/New York session"
+        : "Outside London/New York session",
+
+    utcHour:
+      hour
   };
 }
 
@@ -623,25 +1251,43 @@ function sessionCheck(date = new Date()) {
 // SMA
 // ============================================================
 
-function sma(values, period) {
+function sma(
+  values,
+  period
+) {
   const result =
-    new Array(values.length)
-      .fill(null);
+    new Array(
+      values.length
+    ).fill(null);
 
-  if (values.length < period) {
+  if (
+    values.length <
+    period
+  ) {
     return result;
   }
 
   let sum = 0;
 
-  for (let i = 0; i < values.length; i++) {
+  for (
+    let i = 0;
+    i < values.length;
+    i++
+  ) {
     sum += values[i];
 
-    if (i >= period) {
-      sum -= values[i - period];
+    if (
+      i >= period
+    ) {
+      sum -=
+        values[
+          i - period
+        ];
     }
 
-    if (i >= period - 1) {
+    if (
+      i >= period - 1
+    ) {
       result[i] =
         sum / period;
     }
@@ -655,18 +1301,29 @@ function sma(values, period) {
 // EMA
 // ============================================================
 
-function ema(values, period) {
+function ema(
+  values,
+  period
+) {
   const result =
-    new Array(values.length)
-      .fill(null);
+    new Array(
+      values.length
+    ).fill(null);
 
-  if (values.length < period) {
+  if (
+    values.length <
+    period
+  ) {
     return result;
   }
 
   let sum = 0;
 
-  for (let i = 0; i < period; i++) {
+  for (
+    let i = 0;
+    i < period;
+    i++
+  ) {
     sum += values[i];
   }
 
@@ -677,7 +1334,8 @@ function ema(values, period) {
     previous;
 
   const multiplier =
-    2 / (period + 1);
+    2 /
+    (period + 1);
 
   for (
     let i = period;
@@ -685,7 +1343,10 @@ function ema(values, period) {
     i++
   ) {
     previous =
-      (values[i] - previous) *
+      (
+        values[i] -
+        previous
+      ) *
         multiplier +
       previous;
 
@@ -701,12 +1362,19 @@ function ema(values, period) {
 // TRUE RANGE
 // ============================================================
 
-function trueRange(candles) {
+function trueRange(
+  candles
+) {
   const tr =
-    new Array(candles.length)
-      .fill(null);
+    new Array(
+      candles.length
+    ).fill(null);
 
-  for (let i = 0; i < candles.length; i++) {
+  for (
+    let i = 0;
+    i < candles.length;
+    i++
+  ) {
     if (i === 0) {
       tr[i] =
         candles[i].high -
@@ -746,21 +1414,32 @@ function trueRange(candles) {
 // ATR
 // ============================================================
 
-function atr(candles, period = 14) {
+function atr(
+  candles,
+  period = 14
+) {
   const tr =
     trueRange(candles);
 
   const result =
-    new Array(candles.length)
-      .fill(null);
+    new Array(
+      candles.length
+    ).fill(null);
 
-  if (candles.length < period + 1) {
+  if (
+    candles.length <
+    period + 1
+  ) {
     return result;
   }
 
   let sum = 0;
 
-  for (let i = 0; i < period; i++) {
+  for (
+    let i = 0;
+    i < period;
+    i++
+  ) {
     sum += tr[i];
   }
 
@@ -777,7 +1456,8 @@ function atr(candles, period = 14) {
   ) {
     previous =
       (
-        previous * (period - 1) +
+        previous *
+          (period - 1) +
         tr[i]
       ) / period;
 
@@ -793,24 +1473,37 @@ function atr(candles, period = 14) {
 // RSI
 // ============================================================
 
-function rsi(values, period = 14) {
+function rsi(
+  values,
+  period = 14
+) {
   const result =
-    new Array(values.length)
-      .fill(null);
+    new Array(
+      values.length
+    ).fill(null);
 
-  if (values.length <= period) {
+  if (
+    values.length <=
+    period
+  ) {
     return result;
   }
 
   let gains = 0;
   let losses = 0;
 
-  for (let i = 1; i <= period; i++) {
+  for (
+    let i = 1;
+    i <= period;
+    i++
+  ) {
     const change =
       values[i] -
       values[i - 1];
 
-    if (change >= 0) {
+    if (
+      change >= 0
+    ) {
       gains += change;
     } else {
       losses -= change;
@@ -823,14 +1516,20 @@ function rsi(values, period = 14) {
   let avgLoss =
     losses / period;
 
-  if (avgLoss === 0) {
-    result[period] = 100;
+  if (
+    avgLoss === 0
+  ) {
+    result[period] =
+      100;
   } else {
     const rs =
-      avgGain / avgLoss;
+      avgGain /
+      avgLoss;
 
     result[period] =
-      100 - 100 / (1 + rs);
+      100 -
+      100 /
+        (1 + rs);
   }
 
   for (
@@ -843,31 +1542,45 @@ function rsi(values, period = 14) {
       values[i - 1];
 
     const gain =
-      Math.max(change, 0);
+      Math.max(
+        change,
+        0
+      );
 
     const loss =
-      Math.max(-change, 0);
+      Math.max(
+        -change,
+        0
+      );
 
     avgGain =
       (
-        avgGain * (period - 1) +
+        avgGain *
+          (period - 1) +
         gain
       ) / period;
 
     avgLoss =
       (
-        avgLoss * (period - 1) +
+        avgLoss *
+          (period - 1) +
         loss
       ) / period;
 
-    if (avgLoss === 0) {
-      result[i] = 100;
+    if (
+      avgLoss === 0
+    ) {
+      result[i] =
+        100;
     } else {
       const rs =
-        avgGain / avgLoss;
+        avgGain /
+        avgLoss;
 
       result[i] =
-        100 - 100 / (1 + rs);
+        100 -
+        100 /
+          (1 + rs);
     }
   }
 
@@ -879,18 +1592,31 @@ function rsi(values, period = 14) {
 // MACD
 // ============================================================
 
-function macd(values) {
+function macd(
+  values
+) {
   const fast =
-    ema(values, 12);
+    ema(
+      values,
+      12
+    );
 
   const slow =
-    ema(values, 26);
+    ema(
+      values,
+      26
+    );
 
   const line =
-    new Array(values.length)
-      .fill(null);
+    new Array(
+      values.length
+    ).fill(null);
 
-  for (let i = 0; i < values.length; i++) {
+  for (
+    let i = 0;
+    i < values.length;
+    i++
+  ) {
     if (
       fast[i] !== null &&
       slow[i] !== null
@@ -903,17 +1629,27 @@ function macd(values) {
 
   const valid =
     line.map(v =>
-      v === null ? 0 : v
+      v === null
+        ? 0
+        : v
     );
 
   const signal =
-    ema(valid, 9);
+    ema(
+      valid,
+      9
+    );
 
   const histogram =
-    new Array(values.length)
-      .fill(null);
+    new Array(
+      values.length
+    ).fill(null);
 
-  for (let i = 0; i < values.length; i++) {
+  for (
+    let i = 0;
+    i < values.length;
+    i++
+  ) {
     if (
       line[i] !== null &&
       signal[i] !== null
@@ -936,20 +1672,33 @@ function macd(values) {
 // ADX / DI
 // ============================================================
 
-function adx(candles, period = 14) {
+function adx(
+  candles,
+  period = 14
+) {
   const length =
     candles.length;
 
   const plusDM =
-    new Array(length).fill(0);
+    new Array(
+      length
+    ).fill(0);
 
   const minusDM =
-    new Array(length).fill(0);
+    new Array(
+      length
+    ).fill(0);
 
   const tr =
-    new Array(length).fill(0);
+    new Array(
+      length
+    ).fill(0);
 
-  for (let i = 1; i < length; i++) {
+  for (
+    let i = 1;
+    i < length;
+    i++
+  ) {
     const upMove =
       candles[i].high -
       candles[i - 1].high;
@@ -988,22 +1737,36 @@ function adx(candles, period = 14) {
   }
 
   const smoothedTR =
-    new Array(length).fill(null);
+    new Array(
+      length
+    ).fill(null);
 
   const smoothedPlus =
-    new Array(length).fill(null);
+    new Array(
+      length
+    ).fill(null);
 
   const smoothedMinus =
-    new Array(length).fill(null);
+    new Array(
+      length
+    ).fill(null);
 
   let trSum = 0;
   let plusSum = 0;
   let minusSum = 0;
 
-  for (let i = 1; i <= period; i++) {
+  for (
+    let i = 1;
+    i <= period;
+    i++
+  ) {
     trSum += tr[i];
-    plusSum += plusDM[i];
-    minusSum += minusDM[i];
+
+    plusSum +=
+      plusDM[i];
+
+    minusSum +=
+      minusDM[i];
   }
 
   smoothedTR[period] =
@@ -1022,31 +1785,46 @@ function adx(candles, period = 14) {
   ) {
     smoothedTR[i] =
       smoothedTR[i - 1] -
-      smoothedTR[i - 1] / period +
+      smoothedTR[i - 1] /
+        period +
       tr[i];
 
     smoothedPlus[i] =
       smoothedPlus[i - 1] -
-      smoothedPlus[i - 1] / period +
+      smoothedPlus[i - 1] /
+        period +
       plusDM[i];
 
     smoothedMinus[i] =
       smoothedMinus[i - 1] -
-      smoothedMinus[i - 1] / period +
+      smoothedMinus[i - 1] /
+        period +
       minusDM[i];
   }
 
   const plusDI =
-    new Array(length).fill(null);
+    new Array(
+      length
+    ).fill(null);
 
   const minusDI =
-    new Array(length).fill(null);
+    new Array(
+      length
+    ).fill(null);
 
   const dx =
-    new Array(length).fill(null);
+    new Array(
+      length
+    ).fill(null);
 
-  for (let i = period; i < length; i++) {
-    if (!smoothedTR[i]) {
+  for (
+    let i = period;
+    i < length;
+    i++
+  ) {
+    if (
+      !smoothedTR[i]
+    ) {
       continue;
     }
 
@@ -1064,7 +1842,9 @@ function adx(candles, period = 14) {
       plusDI[i] +
       minusDI[i];
 
-    if (denominator !== 0) {
+    if (
+      denominator !== 0
+    ) {
       dx[i] =
         100 *
         Math.abs(
@@ -1076,7 +1856,9 @@ function adx(candles, period = 14) {
   }
 
   const adxValues =
-    new Array(length).fill(null);
+    new Array(
+      length
+    ).fill(null);
 
   let dxSum = 0;
   let dxCount = 0;
@@ -1086,13 +1868,20 @@ function adx(candles, period = 14) {
     i < length;
     i++
   ) {
-    if (dx[i] !== null) {
+    if (
+      dx[i] !== null
+    ) {
       dxSum += dx[i];
+
       dxCount++;
 
-      if (dxCount === period) {
+      if (
+        dxCount ===
+        period
+      ) {
         adxValues[i] =
-          dxSum / period;
+          dxSum /
+          period;
 
         break;
       }
@@ -1120,7 +1909,8 @@ function adx(candles, period = 14) {
   return {
     plusDI,
     minusDI,
-    adx: adxValues
+    adx:
+      adxValues
   };
 }
 
@@ -1129,7 +1919,10 @@ function adx(candles, period = 14) {
 // CANDLE FEATURES
 // ============================================================
 
-function candleFeatures(candles, index) {
+function candleFeatures(
+  candles,
+  index
+) {
   const c =
     candles[index];
 
@@ -1147,13 +1940,15 @@ function candleFeatures(candles, index) {
 
   const range =
     Math.max(
-      c.high - c.low,
+      c.high -
+        c.low,
       0.000001
     );
 
   const body =
     Math.abs(
-      c.close - c.open
+      c.close -
+      c.open
     );
 
   const upperWick =
@@ -1172,17 +1967,20 @@ function candleFeatures(candles, index) {
 
   return {
     bullish:
-      c.close > c.open,
+      c.close >
+      c.open,
 
     bearish:
-      c.close < c.open,
+      c.close <
+      c.open,
 
     body,
 
     range,
 
     bodyRatio:
-      body / range,
+      body /
+      range,
 
     upperWick,
 
@@ -1195,11 +1993,17 @@ function candleFeatures(candles, index) {
 // MARKET STRUCTURE
 // ============================================================
 
-function structureDirection(candles, lookback = 8) {
+function structureDirection(
+  candles,
+  lookback = 8
+) {
   const n =
     candles.length;
 
-  if (n < lookback + 2) {
+  if (
+    n <
+    lookback + 2
+  ) {
     return "NEUTRAL";
   }
 
@@ -1210,17 +2014,24 @@ function structureDirection(candles, lookback = 8) {
     );
 
   const highs =
-    recent.map(c => c.high);
+    recent.map(
+      c => c.high
+    );
 
   const lows =
-    recent.map(c => c.low);
+    recent.map(
+      c => c.low
+    );
 
   const closes =
-    recent.map(c => c.close);
+    recent.map(
+      c => c.close
+    );
 
   const firstHalf =
     Math.floor(
-      lookback / 2
+      lookback /
+      2
     );
 
   const oldHigh =
@@ -1254,10 +2065,14 @@ function structureDirection(candles, lookback = 8) {
     );
 
   const oldClose =
-    closes[firstHalf - 1];
+    closes[
+      firstHalf - 1
+    ];
 
   const newClose =
-    closes[closes.length - 1];
+    closes[
+      closes.length - 1
+    ];
 
   if (
     newHigh > oldHigh &&
@@ -1297,27 +2112,46 @@ function structureDirection(candles, lookback = 8) {
 // INDICATOR SNAPSHOT
 // ============================================================
 
-function buildIndicators(candles) {
+function buildIndicators(
+  candles
+) {
   const closes =
-    candles.map(c => c.close);
+    candles.map(
+      c => c.close
+    );
 
   const ema20 =
-    ema(closes, 20);
+    ema(
+      closes,
+      20
+    );
 
   const ema50 =
-    ema(closes, 50);
+    ema(
+      closes,
+      50
+    );
 
   const ema100 =
-    ema(closes, 100);
+    ema(
+      closes,
+      100
+    );
 
   const rsiValues =
-    rsi(closes, 14);
+    rsi(
+      closes,
+      14
+    );
 
   const macdValues =
     macd(closes);
 
   const adxValues =
-    adx(candles, 14);
+    adx(
+      candles,
+      14
+    );
 
   const atrValues =
     atr(
@@ -1411,20 +2245,31 @@ function buildIndicators(candles) {
     currentATR > 0
       ? (
           currentClose -
-          closes[Math.max(0, i - 3)]
-        ) / currentATR
+          closes[
+            Math.max(
+              0,
+              i - 3
+            )
+          ]
+        ) /
+        currentATR
       : 0;
 
   return {
-    price: currentClose,
+    price:
+      currentClose,
 
-    ema20: currentEma20,
+    ema20:
+      currentEma20,
 
-    ema50: currentEma50,
+    ema50:
+      currentEma50,
 
-    ema100: currentEma100,
+    ema100:
+      currentEma100,
 
-    rsi: currentRSI,
+    rsi:
+      currentRSI,
 
     previousRSI,
 
@@ -1517,7 +2362,9 @@ function buildIndicators(candles) {
 // TREND DIRECTION
 // ============================================================
 
-function trendDirection(ind) {
+function trendDirection(
+  ind
+) {
   if (
     !ind ||
     !Number.isFinite(ind.ema20) ||
@@ -1578,14 +2425,20 @@ function trendDirection(ind) {
 // ADX Slope    3
 // ============================================================
 
-function scoreDirection(ind, direction) {
+function scoreDirection(
+  ind,
+  direction
+) {
   const isBuy =
     direction === "BUY";
 
   const isSell =
     direction === "SELL";
 
-  if (!isBuy && !isSell) {
+  if (
+    !isBuy &&
+    !isSell
+  ) {
     return {
       total: 0,
       breakdown: {},
@@ -1653,7 +2506,8 @@ function scoreDirection(ind, direction) {
       24
     );
 
-  score += trendScore;
+  score +=
+    trendScore;
 
   breakdown.trend =
     trendScore;
@@ -1665,19 +2519,23 @@ function scoreDirection(ind, direction) {
   let structureScore = 0;
 
   if (
-    ind.structure === direction
+    ind.structure ===
+    direction
   ) {
     structureScore = 16;
+
     reasons.push(
       `${direction} structure`
     );
   } else if (
-    ind.structure === "NEUTRAL"
+    ind.structure ===
+    "NEUTRAL"
   ) {
     structureScore = 7;
   }
 
-  score += structureScore;
+  score +=
+    structureScore;
 
   breakdown.structure =
     structureScore;
@@ -1698,7 +2556,8 @@ function scoreDirection(ind, direction) {
     diScore = 14;
   } else if (
     isBuy &&
-    diSpread >= CONFIG.MIN_DI_SPREAD
+    diSpread >=
+      CONFIG.MIN_DI_SPREAD
   ) {
     diScore = 10;
   } else if (
@@ -1715,7 +2574,8 @@ function scoreDirection(ind, direction) {
     diScore = 14;
   } else if (
     isSell &&
-    diSpread <= -CONFIG.MIN_DI_SPREAD
+    diSpread <=
+      -CONFIG.MIN_DI_SPREAD
   ) {
     diScore = 10;
   } else if (
@@ -1725,7 +2585,8 @@ function scoreDirection(ind, direction) {
     diScore = 6;
   }
 
-  score += diScore;
+  score +=
+    diScore;
 
   breakdown.di =
     diScore;
@@ -1738,29 +2599,34 @@ function scoreDirection(ind, direction) {
 
   if (
     isBuy &&
-    ind.macd > ind.macdSignal &&
+    ind.macd >
+      ind.macdSignal &&
     ind.macdHistogram > 0
   ) {
     macdScore = 12;
   } else if (
     isSell &&
-    ind.macd < ind.macdSignal &&
+    ind.macd <
+      ind.macdSignal &&
     ind.macdHistogram < 0
   ) {
     macdScore = 12;
   } else if (
     isBuy &&
-    ind.macd > ind.macdSignal
+    ind.macd >
+      ind.macdSignal
   ) {
     macdScore = 8;
   } else if (
     isSell &&
-    ind.macd < ind.macdSignal
+    ind.macd <
+      ind.macdSignal
   ) {
     macdScore = 8;
   }
 
-  score += macdScore;
+  score +=
+    macdScore;
 
   breakdown.macd =
     macdScore;
@@ -1795,7 +2661,8 @@ function scoreDirection(ind, direction) {
     rsiScore = 5;
   }
 
-  score += rsiScore;
+  score +=
+    rsiScore;
 
   breakdown.rsi =
     rsiScore;
@@ -1820,7 +2687,8 @@ function scoreDirection(ind, direction) {
     rsiSlopeScore = 4;
   }
 
-  score += rsiSlopeScore;
+  score +=
+    rsiSlopeScore;
 
   breakdown.rsiSlope =
     rsiSlopeScore;
@@ -1838,7 +2706,8 @@ function scoreDirection(ind, direction) {
     momentumScore = 8;
   } else if (
     isBuy &&
-    ind.momentum >= CONFIG.MIN_MOMENTUM
+    ind.momentum >=
+      CONFIG.MIN_MOMENTUM
   ) {
     momentumScore = 5;
   } else if (
@@ -1848,12 +2717,14 @@ function scoreDirection(ind, direction) {
     momentumScore = 8;
   } else if (
     isSell &&
-    ind.momentum <= -CONFIG.MIN_MOMENTUM
+    ind.momentum <=
+      -CONFIG.MIN_MOMENTUM
   ) {
     momentumScore = 5;
   }
 
-  score += momentumScore;
+  score +=
+    momentumScore;
 
   breakdown.momentum =
     momentumScore;
@@ -1888,7 +2759,8 @@ function scoreDirection(ind, direction) {
     candleScore = 4;
   }
 
-  score += candleScore;
+  score +=
+    candleScore;
 
   breakdown.candle =
     candleScore;
@@ -1906,12 +2778,14 @@ function scoreDirection(ind, direction) {
     adxScore = 5;
   } else if (
     Number.isFinite(ind.adx) &&
-    ind.adx >= CONFIG.MIN_ADX
+    ind.adx >=
+      CONFIG.MIN_ADX
   ) {
     adxScore = 3;
   }
 
-  score += adxScore;
+  score +=
+    adxScore;
 
   breakdown.adx =
     adxScore;
@@ -1929,12 +2803,14 @@ function scoreDirection(ind, direction) {
     adxSlopeScore = 3;
   } else if (
     Number.isFinite(ind.adxSlope) &&
-    ind.adxSlope >= CONFIG.MIN_ADX_SLOPE
+    ind.adxSlope >=
+      CONFIG.MIN_ADX_SLOPE
   ) {
     adxSlopeScore = 2;
   }
 
-  score += adxSlopeScore;
+  score +=
+    adxSlopeScore;
 
   breakdown.adxSlope =
     adxSlopeScore;
@@ -1953,7 +2829,7 @@ function scoreDirection(ind, direction) {
 // ============================================================
 // DIRECTION CHECK
 //
-// V7.0.2
+// V7.0.2 logic preserved
 //
 // 1H remains strict.
 // 15M needs enough confirmations,
@@ -1968,22 +2844,30 @@ function directionCheck(
   const reasons = [];
 
   const slowTrend =
-    trendDirection(slow);
+    trendDirection(
+      slow
+    );
 
   const fastTrend =
-    trendDirection(fast);
+    trendDirection(
+      fast
+    );
 
   // ----------------------------------------------------------
   // 1H CORE
   // ----------------------------------------------------------
 
   if (
-    slowTrend !== direction
+    slowTrend !==
+    direction
   ) {
     return {
       ok: false,
+
       confirmations: 0,
+
       minimumConfirmations: 0,
+
       reasons: [
         `1H trend is ${slowTrend}, expected ${direction}`
       ]
@@ -1996,48 +2880,73 @@ function directionCheck(
 
   // 1H trend
   checks.push({
-    name: "1H trend",
+    name:
+      "1H trend",
+
     ok:
-      slowTrend === direction
+      slowTrend ===
+      direction
   });
 
   // 1H structure
   checks.push({
-    name: "1H structure",
+    name:
+      "1H structure",
+
     ok:
-      slow.structure === direction ||
-      slow.structure === "NEUTRAL"
+      slow.structure ===
+        direction ||
+      slow.structure ===
+        "NEUTRAL"
   });
 
   // 1H DI
   checks.push({
-    name: "1H DI",
+    name:
+      "1H DI",
+
     ok:
       direction === "BUY"
-        ? slow.diSpread >= CONFIG.MIN_SLOW_DI_SPREAD
-        : slow.diSpread <= -CONFIG.MIN_SLOW_DI_SPREAD
+        ? slow.diSpread >=
+          CONFIG.MIN_SLOW_DI_SPREAD
+        : slow.diSpread <=
+          -CONFIG.MIN_SLOW_DI_SPREAD
   });
 
   // 1H MACD
   checks.push({
-    name: "1H MACD",
+    name:
+      "1H MACD",
+
     ok:
       direction === "BUY"
-        ? slow.macd >= slow.macdSignal
-        : slow.macd <= slow.macdSignal
+        ? slow.macd >=
+          slow.macdSignal
+        : slow.macd <=
+          slow.macdSignal
   });
 
   // 1H ADX
   checks.push({
-    name: "1H ADX",
+    name:
+      "1H ADX",
+
     ok:
-      Number.isFinite(slow.adx) &&
-      slow.adx >= CONFIG.MIN_SLOW_ADX
+      Number.isFinite(
+        slow.adx
+      ) &&
+      slow.adx >=
+        CONFIG.MIN_SLOW_ADX
   });
 
-  for (const check of checks) {
-    if (check.ok) {
+  for (
+    const check of checks
+  ) {
+    if (
+      check.ok
+    ) {
       confirmations++;
+
       reasons.push(
         `${check.name} confirmed`
       );
@@ -2045,11 +2954,17 @@ function directionCheck(
   }
 
   // Need at least 4/5 slow checks.
-  if (confirmations < 4) {
+  if (
+    confirmations < 4
+  ) {
     return {
       ok: false,
+
       confirmations,
-      minimumConfirmations: 4,
+
+      minimumConfirmations:
+        4,
+
       reasons
     };
   }
@@ -2061,44 +2976,65 @@ function directionCheck(
   const fastChecks = [];
 
   fastChecks.push({
-    name: "15M trend",
+    name:
+      "15M trend",
+
     ok:
-      fastTrend === direction
+      fastTrend ===
+      direction
   });
 
   fastChecks.push({
-    name: "15M structure",
+    name:
+      "15M structure",
+
     ok:
-      fast.structure === direction ||
-      fast.structure === "NEUTRAL"
+      fast.structure ===
+        direction ||
+      fast.structure ===
+        "NEUTRAL"
   });
 
   fastChecks.push({
-    name: "15M DI",
-    ok:
-      direction === "BUY"
-        ? fast.diSpread >= CONFIG.MIN_DI_SPREAD
-        : fast.diSpread <= -CONFIG.MIN_DI_SPREAD
-  });
+    name:
+      "15M DI",
 
-  fastChecks.push({
-    name: "15M MACD",
-    ok:
-      direction === "BUY"
-        ? fast.macd >= fast.macdSignal
-        : fast.macd <= fast.macdSignal
-  });
-
-  fastChecks.push({
-    name: "15M momentum",
     ok:
       direction === "BUY"
-        ? fast.momentum >= CONFIG.MIN_MOMENTUM
-        : fast.momentum <= -CONFIG.MIN_MOMENTUM
+        ? fast.diSpread >=
+          CONFIG.MIN_DI_SPREAD
+        : fast.diSpread <=
+          -CONFIG.MIN_DI_SPREAD
   });
 
   fastChecks.push({
-    name: "15M RSI",
+    name:
+      "15M MACD",
+
+    ok:
+      direction === "BUY"
+        ? fast.macd >=
+          fast.macdSignal
+        : fast.macd <=
+          fast.macdSignal
+  });
+
+  fastChecks.push({
+    name:
+      "15M momentum",
+
+    ok:
+      direction === "BUY"
+        ? fast.momentum >=
+          CONFIG.MIN_MOMENTUM
+        : fast.momentum <=
+          -CONFIG.MIN_MOMENTUM
+  });
+
+  fastChecks.push({
+    name:
+      "15M RSI",
+
     ok:
       direction === "BUY"
         ? fast.rsi >= 50
@@ -2106,7 +3042,9 @@ function directionCheck(
   });
 
   fastChecks.push({
-    name: "15M candle",
+    name:
+      "15M candle",
+
     ok:
       direction === "BUY"
         ? fast.candle.bullish
@@ -2114,23 +3052,37 @@ function directionCheck(
   });
 
   fastChecks.push({
-    name: "15M ADX",
+    name:
+      "15M ADX",
+
     ok:
-      Number.isFinite(fast.adx) &&
-      fast.adx >= CONFIG.MIN_ADX
+      Number.isFinite(
+        fast.adx
+      ) &&
+      fast.adx >=
+        CONFIG.MIN_ADX
   });
 
   fastChecks.push({
-    name: "15M ADX slope",
+    name:
+      "15M ADX slope",
+
     ok:
-      Number.isFinite(fast.adxSlope) &&
-      fast.adxSlope >= CONFIG.MIN_ADX_SLOPE
+      Number.isFinite(
+        fast.adxSlope
+      ) &&
+      fast.adxSlope >=
+        CONFIG.MIN_ADX_SLOPE
   });
 
   let fastConfirmations = 0;
 
-  for (const check of fastChecks) {
-    if (check.ok) {
+  for (
+    const check of fastChecks
+  ) {
+    if (
+      check.ok
+    ) {
       fastConfirmations++;
 
       reasons.push(
@@ -2148,6 +3100,7 @@ function directionCheck(
   ) {
     return {
       ok: false,
+
       confirmations:
         confirmations +
         fastConfirmations,
@@ -2203,7 +3156,11 @@ function directionCheck(
 
         reasons: [
           ...reasons,
-          `Anti-chase: price is ${round(distanceATR, 2)} ATR from EMA20`
+
+          `Anti-chase: price is ${round(
+            distanceATR,
+            2
+          )} ATR from EMA20`
         ]
       };
     }
@@ -2244,7 +3201,8 @@ function buildTradePlan(
   ) {
     return {
       ok: false,
-      reason: "Invalid direction"
+      reason:
+        "Invalid direction"
     };
   }
 
@@ -2261,7 +3219,8 @@ function buildTradePlan(
   ) {
     return {
       ok: false,
-      reason: "Invalid price or ATR"
+      reason:
+        "Invalid price or ATR"
     };
   }
 
@@ -2285,7 +3244,9 @@ function buildTradePlan(
   let structureLow =
     entry;
 
-  if (recent.length) {
+  if (
+    recent.length
+  ) {
     structureHigh =
       Math.max(
         ...recent.map(
@@ -2311,7 +3272,9 @@ function buildTradePlan(
 
   let stopLoss;
 
-  if (direction === "BUY") {
+  if (
+    direction === "BUY"
+  ) {
     stopLoss =
       Math.min(
         entry -
@@ -2343,7 +3306,8 @@ function buildTradePlan(
   ) {
     return {
       ok: false,
-      reason: "Invalid risk"
+      reason:
+        "Invalid risk"
     };
   }
 
@@ -2362,7 +3326,9 @@ function buildTradePlan(
   let tp1;
   let tp2;
 
-  if (direction === "BUY") {
+  if (
+    direction === "BUY"
+  ) {
     tp1 =
       entry +
       tp1Distance;
@@ -2382,12 +3348,14 @@ function buildTradePlan(
 
   const rr1 =
     Math.abs(
-      tp1 - entry
+      tp1 -
+      entry
     ) / risk;
 
   const rr2 =
     Math.abs(
-      tp2 - entry
+      tp2 -
+      entry
     ) / risk;
 
   if (
@@ -2396,8 +3364,12 @@ function buildTradePlan(
   ) {
     return {
       ok: false,
+
       reason:
-        `RR ${round(rr1, 2)} below minimum ${CONFIG.MIN_RR}`
+        `RR ${round(
+          rr1,
+          2
+        )} below minimum ${CONFIG.MIN_RR}`
     };
   }
 
@@ -2407,34 +3379,64 @@ function buildTradePlan(
     direction,
 
     entry:
-      round(entry, 2),
+      round(
+        entry,
+        2
+      ),
 
     stopLoss:
-      round(stopLoss, 2),
+      round(
+        stopLoss,
+        2
+      ),
 
     tp1:
-      round(tp1, 2),
+      round(
+        tp1,
+        2
+      ),
 
     tp2:
-      round(tp2, 2),
+      round(
+        tp2,
+        2
+      ),
 
     risk:
-      round(risk, 2),
+      round(
+        risk,
+        2
+      ),
 
     rr1:
-      round(rr1, 2),
+      round(
+        rr1,
+        2
+      ),
 
     rr2:
-      round(rr2, 2),
+      round(
+        rr2,
+        2
+      ),
 
     atr:
-      round(atrValue, 2),
+      round(
+        atrValue,
+        2
+      ),
 
     structureHigh:
-      round(structureHigh, 2),
+      round(
+        structureHigh,
+        2
+      ),
 
     structureLow:
-      round(structureLow, 2)
+      round(
+        structureLow,
+        2
+      )
   };
 }
 
@@ -2470,7 +3472,9 @@ function generateSignal(
       slowCandles
     );
 
-  if (!freshness.ok) {
+  if (
+    !freshness.ok
+  ) {
     return {
       version:
         CONFIG.VERSION,
@@ -2488,6 +3492,7 @@ function generateSignal(
       sellScore: 0,
 
       reason:
+        freshness.reason ||
         "Market data is stale",
 
       freshness,
@@ -2496,14 +3501,17 @@ function generateSignal(
 
       slow,
 
-      tradePlan: null
+      tradePlan:
+        null
     };
   }
 
   const session =
     sessionCheck();
 
-  if (!session.ok) {
+  if (
+    !session.ok
+  ) {
     return {
       version:
         CONFIG.VERSION,
@@ -2531,7 +3539,8 @@ function generateSignal(
 
       slow,
 
-      tradePlan: null
+      tradePlan:
+        null
     };
   }
 
@@ -2619,7 +3628,8 @@ function generateSignal(
       scoreBreakdown:
         selected.breakdown,
 
-      tradePlan: null
+      tradePlan:
+        null
     };
   }
 
@@ -2663,7 +3673,8 @@ function generateSignal(
       scoreBreakdown:
         selected.breakdown,
 
-      tradePlan: null
+      tradePlan:
+        null
     };
   }
 
@@ -2678,7 +3689,9 @@ function generateSignal(
       direction
     );
 
-  if (!confirmation.ok) {
+  if (
+    !confirmation.ok
+  ) {
     return {
       version:
         CONFIG.VERSION,
@@ -2713,7 +3726,8 @@ function generateSignal(
       scoreBreakdown:
         selected.breakdown,
 
-      tradePlan: null
+      tradePlan:
+        null
     };
   }
 
@@ -2728,7 +3742,9 @@ function generateSignal(
       direction
     );
 
-  if (!tradePlan.ok) {
+  if (
+    !tradePlan.ok
+  ) {
     return {
       version:
         CONFIG.VERSION,
@@ -2817,7 +3833,10 @@ function generateSignal(
 // FORMAT NUMBER
 // ============================================================
 
-function fmt(value, digits = 2) {
+function fmt(
+  value,
+  digits = 2
+) {
   if (
     value === null ||
     value === undefined ||
@@ -2838,7 +3857,9 @@ function fmt(value, digits = 2) {
 // TELEGRAM SIGNAL MESSAGE
 // ============================================================
 
-function formatSignalMessage(signal) {
+function formatSignalMessage(
+  signal
+) {
   const p =
     signal.tradePlan;
 
@@ -2936,7 +3957,9 @@ function formatSignalMessage(signal) {
 // FORMAT WAIT MESSAGE
 // ============================================================
 
-function formatWaitStatusMessage(signal) {
+function formatWaitStatusMessage(
+  signal
+) {
   const f =
     signal.fast || {};
 
@@ -2998,7 +4021,11 @@ function formatWaitStatusMessage(signal) {
 
     `📡 Data 15M: ${freshness.fastAgeSeconds ?? "-"}s`,
 
+    `📡 15M Bucket Lag: ${freshness.fastBucketLagSeconds ?? "-"}s`,
+
     `📡 Data 1H: ${freshness.slowAgeSeconds ?? "-"}s`,
+
+    `📡 1H Bucket Lag: ${freshness.slowBucketLagSeconds ?? "-"}s`,
 
     `🕒 Session: ${session.reason || "-"}`,
 
@@ -3017,8 +4044,12 @@ function formatWaitStatusMessage(signal) {
 // NEWS
 // ============================================================
 
-async function getNews(env) {
-  if (!CONFIG.NEWS_ENABLED) {
+async function getNews(
+  env
+) {
+  if (
+    !CONFIG.NEWS_ENABLED
+  ) {
     return [];
   }
 
@@ -3028,8 +4059,13 @@ async function getNews(env) {
   return [];
 }
 
-function formatNewsMessage(news) {
-  if (!Array.isArray(news) || !news.length) {
+function formatNewsMessage(
+  news
+) {
+  if (
+    !Array.isArray(news) ||
+    !news.length
+  ) {
     return "";
   }
 
@@ -3039,7 +4075,10 @@ function formatNewsMessage(news) {
   ];
 
   for (
-    const item of news.slice(0, 5)
+    const item of news.slice(
+      0,
+      5
+    )
   ) {
     lines.push(
       `• ${item.title || "News"}`
@@ -3054,7 +4093,9 @@ function formatNewsMessage(news) {
 // DUPLICATE PROTECTION
 // ============================================================
 
-async function getLastSignal(env) {
+async function getLastSignal(
+  env
+) {
   if (
     !env ||
     !env.SIGNAL_KV
@@ -3072,7 +4113,9 @@ async function getLastSignal(env) {
       return null;
     }
 
-    return JSON.parse(raw);
+    return JSON.parse(
+      raw
+    );
   } catch {
     return null;
   }
@@ -3092,6 +4135,7 @@ async function saveLastSignal(
   try {
     await env.SIGNAL_KV.put(
       "last_signal",
+
       JSON.stringify({
         signal:
           signal.signal,
@@ -3111,6 +4155,7 @@ async function saveLastSignal(
         generatedAt:
           signal.generatedAt
       }),
+
       {
         expirationTtl:
           86400
@@ -3148,7 +4193,10 @@ function isDuplicateSignal(
       current.tradePlan?.entry
     );
 
-  if (!previousEntry || !currentEntry) {
+  if (
+    !previousEntry ||
+    !currentEntry
+  ) {
     return false;
   }
 
@@ -3162,7 +4210,8 @@ function isDuplicateSignal(
     difference <=
     Math.max(
       1,
-      current.tradePlan?.risk || 1
+      current.tradePlan?.risk ||
+        1
     )
   );
 }
@@ -3176,10 +4225,13 @@ async function maybeSendSignal(
   env,
   signal
 ) {
-  if (!CONFIG.TELEGRAM_ENABLED) {
+  if (
+    !CONFIG.TELEGRAM_ENABLED
+  ) {
     return {
       sent: false,
-      reason: "Telegram disabled"
+      reason:
+        "Telegram disabled"
     };
   }
 
@@ -3188,13 +4240,15 @@ async function maybeSendSignal(
   // ----------------------------------------------------------
 
   if (
-    signal.signal === "WAIT"
+    signal.signal ===
+    "WAIT"
   ) {
     if (
       !CONFIG.TELEGRAM_SEND_WAIT_STATUS
     ) {
       return {
         sent: false,
+
         reason:
           "WAIT status sending disabled"
       };
@@ -3203,6 +4257,7 @@ async function maybeSendSignal(
     const result =
       await sendTelegramToChat(
         env,
+
         formatWaitStatusMessage(
           signal
         )
@@ -3212,9 +4267,11 @@ async function maybeSendSignal(
       sent:
         result.ok === true,
 
-      type: "WAIT",
+      type:
+        "WAIT",
 
-      telegram: result
+      telegram:
+        result
     };
   }
 
@@ -3227,13 +4284,16 @@ async function maybeSendSignal(
   ) {
     return {
       sent: false,
+
       reason:
         "Signal sending disabled"
     };
   }
 
   const previous =
-    await getLastSignal(env);
+    await getLastSignal(
+      env
+    );
 
   if (
     isDuplicateSignal(
@@ -3243,8 +4303,10 @@ async function maybeSendSignal(
   ) {
     return {
       sent: false,
+
       reason:
         "Duplicate signal blocked",
+
       previous
     };
   }
@@ -3252,12 +4314,15 @@ async function maybeSendSignal(
   const result =
     await sendTelegramToChat(
       env,
+
       formatSignalMessage(
         signal
       )
     );
 
-  if (result.ok) {
+  if (
+    result.ok
+  ) {
     await saveLastSignal(
       env,
       signal
@@ -3337,7 +4402,8 @@ async function runEngine(
       nowIso(),
 
     durationMs:
-      nowMs() - started,
+      nowMs() -
+      started,
 
     signal,
 
@@ -3350,13 +4416,18 @@ async function runEngine(
 // TELEGRAM TEST
 // ============================================================
 
-async function telegramTest(env) {
+async function telegramTest(
+  env
+) {
   const chatId =
-    getTelegramChatId(env);
+    getTelegramChatId(
+      env
+    );
 
   if (!chatId) {
     return {
       ok: false,
+
       error:
         "TELEGRAM_CHAT_ID is missing"
     };
@@ -3368,12 +4439,19 @@ async function telegramTest(env) {
 
       [
         `✅ HAKIM GOLD SIGNALS`,
+
         ``,
+
         `Telegram connection test`,
+
         ``,
+
         `Version: ${CONFIG.VERSION}`,
+
         `Symbol: ${CONFIG.SYMBOL}`,
+
         ``,
+
         `Time: ${nowIso()}`
       ].join("\n")
     );
@@ -3395,16 +4473,23 @@ async function telegramTest(env) {
 // TELEGRAM STATUS
 // ============================================================
 
-async function telegramStatus(env) {
+async function telegramStatus(
+  env
+) {
   const token =
-    getTelegramToken(env);
+    getTelegramToken(
+      env
+    );
 
   const chatId =
-    getTelegramChatId(env);
+    getTelegramChatId(
+      env
+    );
 
   if (!token) {
     return {
       ok: false,
+
       error:
         "TELEGRAM_BOT_TOKEN is missing"
     };
@@ -3477,9 +4562,12 @@ async function telegramSetWebhook(
   const result =
     await telegramApi(
       env,
+
       "setWebhook",
+
       {
-        url: webhookUrl
+        url:
+          webhookUrl
       }
     );
 
@@ -3512,6 +4600,7 @@ async function handleTelegramWebhook(
     return jsonResponse(
       {
         ok: false,
+
         error:
           "Invalid JSON"
       },
@@ -3550,17 +4639,25 @@ async function handleTelegramWebhook(
 
           [
             `💎 HAKIM GOLD SIGNALS`,
+
             ``,
+
             `ربات فعال است.`,
+
             ``,
+
             `نسخه: ${CONFIG.VERSION}`,
+
             `نماد: ${CONFIG.SYMBOL}`,
+
             ``,
+
             `برای بررسی وضعیت از /status استفاده کنید.`
           ].join("\n"),
 
           {
-            chatId: String(chatId)
+            chatId:
+              String(chatId)
           }
         );
       }
@@ -3573,16 +4670,23 @@ async function handleTelegramWebhook(
 
           [
             `💎 HAKIM GOLD SIGNALS`,
+
             ``,
+
             `🟢 Worker فعال است.`,
+
             `Version: ${CONFIG.VERSION}`,
+
             `Symbol: ${CONFIG.SYMBOL}`,
+
             ``,
+
             `Time: ${nowIso()}`
           ].join("\n"),
 
           {
-            chatId: String(chatId)
+            chatId:
+              String(chatId)
           }
         );
       }
@@ -3675,6 +4779,7 @@ async function handleRequest(
       const result =
         await runEngine(
           env,
+
           {
             forceRefresh:
               url.searchParams.get(
@@ -3707,6 +4812,7 @@ async function handleRequest(
           time:
             nowIso()
         },
+
         500
       );
     }
@@ -3717,7 +4823,8 @@ async function handleRequest(
   // ----------------------------------------------------------
 
   if (
-    pathname === "/api/signals"
+    pathname ===
+    "/api/signals"
   ) {
     try {
       const send =
@@ -3728,9 +4835,13 @@ async function handleRequest(
       const result =
         await runEngine(
           env,
+
           {
-            forceRefresh: true,
-            sendTelegram: send
+            forceRefresh:
+              true,
+
+            sendTelegram:
+              send
           }
         );
 
@@ -3750,6 +4861,7 @@ async function handleRequest(
               ? error.message
               : String(error)
         },
+
         500
       );
     }
@@ -3760,7 +4872,8 @@ async function handleRequest(
   // ----------------------------------------------------------
 
   if (
-    pathname === "/telegram-test"
+    pathname ===
+    "/telegram-test"
   ) {
     const result =
       await telegramTest(
@@ -3769,7 +4882,10 @@ async function handleRequest(
 
     return jsonResponse(
       result,
-      result.ok ? 200 : 500
+
+      result.ok
+        ? 200
+        : 500
     );
   }
 
@@ -3778,7 +4894,8 @@ async function handleRequest(
   // ----------------------------------------------------------
 
   if (
-    pathname === "/telegram-status"
+    pathname ===
+    "/telegram-status"
   ) {
     const result =
       await telegramStatus(
@@ -3787,7 +4904,10 @@ async function handleRequest(
 
     return jsonResponse(
       result,
-      result.ok ? 200 : 500
+
+      result.ok
+        ? 200
+        : 500
     );
   }
 
@@ -3796,7 +4916,8 @@ async function handleRequest(
   // ----------------------------------------------------------
 
   if (
-    pathname === "/telegram-webhook-info"
+    pathname ===
+    "/telegram-webhook-info"
   ) {
     const result =
       await telegramWebhookInfo(
@@ -3805,7 +4926,10 @@ async function handleRequest(
 
     return jsonResponse(
       result,
-      result.ok ? 200 : 500
+
+      result.ok
+        ? 200
+        : 500
     );
   }
 
@@ -3814,7 +4938,8 @@ async function handleRequest(
   // ----------------------------------------------------------
 
   if (
-    pathname === "/telegram-set-webhook"
+    pathname ===
+    "/telegram-set-webhook"
   ) {
     const result =
       await telegramSetWebhook(
@@ -3824,7 +4949,10 @@ async function handleRequest(
 
     return jsonResponse(
       result,
-      result.ok ? 200 : 500
+
+      result.ok
+        ? 200
+        : 500
     );
   }
 
@@ -3833,7 +4961,8 @@ async function handleRequest(
   // ----------------------------------------------------------
 
   if (
-    pathname === "/telegram-webhook"
+    pathname ===
+    "/telegram-webhook"
   ) {
     return await handleTelegramWebhook(
       request,
@@ -3846,7 +4975,8 @@ async function handleRequest(
   // ----------------------------------------------------------
 
   if (
-    pathname === "/config"
+    pathname ===
+    "/config"
   ) {
     return jsonResponse({
       version:
@@ -3891,6 +5021,9 @@ async function handleRequest(
       minRR:
         CONFIG.MIN_RR,
 
+      freshness:
+        CONFIG.FRESHNESS,
+
       telegramEnabled:
         CONFIG.TELEGRAM_ENABLED,
 
@@ -3931,6 +5064,7 @@ async function handleRequest(
       version:
         CONFIG.VERSION
     },
+
     404
   );
 }
@@ -3948,62 +5082,82 @@ async function scheduled(
   const job =
     runEngine(
       env,
+
       {
-        forceRefresh: true,
-        sendTelegram: true
+        forceRefresh:
+          true,
+
+        sendTelegram:
+          true
       }
     )
-    .then(result => {
-      console.log(
-        "FOREX ENGINE RESULT:",
-        JSON.stringify(
-          result
-        )
-      );
-
-      return result;
-    })
-    .catch(async error => {
-      const message =
-        error instanceof Error
-          ? error.message
-          : String(error);
-
-      console.error(
-        "FOREX ENGINE ERROR:",
-        message
-      );
-
-      // Try to notify Telegram.
-      try {
-        await sendTelegramToChat(
-          env,
-
-          [
-            `🚨 FOREX ENGINE ERROR`,
-            ``,
-            `Version: ${CONFIG.VERSION}`,
-            `Symbol: ${CONFIG.SYMBOL}`,
-            ``,
-            message,
-            ``,
-            nowIso()
-          ].join("\n")
+    .then(
+      result => {
+        console.log(
+          "FOREX ENGINE RESULT:",
+          JSON.stringify(
+            result
+          )
         );
-      } catch (telegramError) {
-        console.error(
-          "Telegram error:",
-          telegramError
-        );
+
+        return result;
       }
+    )
+    .catch(
+      async error => {
+        const message =
+          error instanceof Error
+            ? error.message
+            : String(error);
 
-      return {
-        ok: false,
-        error: message
-      };
-    });
+        console.error(
+          "FOREX ENGINE ERROR:",
+          message
+        );
 
-  ctx.waitUntil(job);
+        // Try to notify Telegram.
+        try {
+          await sendTelegramToChat(
+            env,
+
+            [
+              `🚨 FOREX ENGINE ERROR`,
+
+              ``,
+
+              `Version: ${CONFIG.VERSION}`,
+
+              `Symbol: ${CONFIG.SYMBOL}`,
+
+              ``,
+
+              message,
+
+              ``,
+
+              nowIso()
+            ].join("\n")
+          );
+        } catch (
+          telegramError
+        ) {
+          console.error(
+            "Telegram error:",
+            telegramError
+          );
+        }
+
+        return {
+          ok: false,
+          error:
+            message
+        };
+      }
+    );
+
+  ctx.waitUntil(
+    job
+  );
 }
 
 
@@ -4044,6 +5198,7 @@ export default {
           time:
             nowIso()
         },
+
         500
       );
     }
