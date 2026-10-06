@@ -16,6 +16,7 @@
 // - Telegram webhook commands
 // - Cron signal/news support
 // - Strict Gold Quality filters
+// - DIRECT /test-price endpoint
 //
 // Cloudflare secrets/vars:
 // TWELVE_DATA_API_KEY
@@ -4652,6 +4653,97 @@ async function healthResponse(
 
 
 // ============================================================
+// DIRECT PRICE TEST — XAU/USD
+// ============================================================
+
+async function testPriceResponse(
+  env
+) {
+
+  const fastCandles =
+    await getTimeSeries(
+      env,
+      CONFIG.INTERVAL_FAST
+    );
+
+
+  const slowCandles =
+    await getTimeSeries(
+      env,
+      CONFIG.INTERVAL_SLOW
+    );
+
+
+  const fastLast =
+    fastCandles[
+      fastCandles.length - 1
+    ];
+
+
+  const slowLast =
+    slowCandles[
+      slowCandles.length - 1
+    ];
+
+
+  const fastFirst =
+    fastCandles[0];
+
+
+  const slowFirst =
+    slowCandles[0];
+
+
+  return jsonResponse({
+
+    ok: true,
+
+    version:
+      CONFIG.VERSION,
+
+    symbol:
+      CONFIG.SYMBOL,
+
+    test:
+      "DIRECT XAU/USD PRICE TEST",
+
+    fast_15m: {
+
+      count:
+        fastCandles.length,
+
+      first_candle:
+        fastFirst,
+
+      last_candle:
+        fastLast
+
+    },
+
+    slow_1h: {
+
+      count:
+        slowCandles.length,
+
+      first_candle:
+        slowFirst,
+
+      last_candle:
+        slowLast
+
+    },
+
+    cache:
+      getTwelveDataCacheStatus(),
+
+    timestamp:
+      new Date().toISOString()
+
+  });
+}
+
+
+// ============================================================
 // NEWS RESPONSE
 // ============================================================
 
@@ -5111,6 +5203,24 @@ export default {
           await healthResponse(
             env
           )
+        );
+      }
+
+
+      // ------------------------------------------------------
+      // DIRECT PRICE TEST
+      // ------------------------------------------------------
+
+      if (
+        path === "/test-price"
+      ) {
+
+        return withCors(
+
+          await testPriceResponse(
+            env
+          )
+
         );
       }
 
