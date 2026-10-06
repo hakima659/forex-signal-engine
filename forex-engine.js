@@ -17,6 +17,7 @@
 // - Cron signal/news support
 // - Strict Gold Quality filters
 // - DIRECT /test-price endpoint
+// - FIX: candles ordered oldest -> newest
 //
 // Cloudflare secrets/vars:
 // TWELVE_DATA_API_KEY
@@ -356,6 +357,15 @@ function parseTwelveDataValues(json) {
       "Not enough valid Twelve Data candles."
     );
   }
+
+  // IMPORTANT:
+  // Twelve Data is requested with order=DESC,
+  // so the newest candle comes first.
+  //
+  // All indicator calculations in this engine
+  // require chronological order:
+  // OLDEST -> NEWEST
+  candles.reverse();
 
   return candles;
 }
