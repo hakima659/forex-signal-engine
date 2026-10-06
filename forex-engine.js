@@ -1,22 +1,30 @@
 // ============================================================
-// FOREX SIGNAL ENGINE V7.0.3 — GOLD QUALITY
+// FOREX SIGNAL ENGINE V7.0.4 — ULTRA GOLD SIGNAL
 // Cloudflare Worker + Twelve Data + Telegram
 //
 // PRIMARY: XAU/USD
 // TIMEFRAMES: 15M + 1H
 //
-// V7.0.3:
-// - Fixed candle freshness detection
-// - Current 15M candle is no longer treated as stale
-// - Current 1H candle is no longer treated as stale
-// - Allows current candle + one previous candle
-// - Relaxed but still quality-first signal filtering
-// - Strict 1H trend confirmation
-// - Flexible 15M confirmation
-// - Fixed 100-point scoring model
-// - Pullback-first entry
+// V7.0.4:
+// - Ultra quality signal filtering
+// - Strong 15M + 1H confluence
+// - 1H requires full confirmation
+// - 15M requires strong confirmation
+// - Minimum fast score 88/100
+// - Minimum direction lead 40
+// - Stronger ADX / DI filters
+// - Stronger momentum filter
+// - Pullback-first early-entry logic
 // - Anti-chase protection
 // - ATR + structure based SL/TP
+// - RR minimum 1.50
+// - Break-even management level
+// - Profit-lock management level
+// - Early invalidation / exit condition
+// - Fixed candle freshness detection
+// - Current 15M candle is not treated as stale
+// - Current 1H candle is not treated as stale
+// - Allows current candle + one previous candle
 // - Telegram WAIT status
 // - Telegram BUY/SELL alerts
 // - Cron every 15 minutes
@@ -24,7 +32,7 @@
 // ============================================================
 
 const CONFIG = {
-  VERSION: "V7.0.3",
+  VERSION: "V7.0.4",
 
   SYMBOL: "XAU/USD",
 
@@ -34,26 +42,39 @@ const CONFIG = {
   OUTPUTSIZE: 100,
 
   // ----------------------------------------------------------
-  // SIGNAL FILTERS
+  // ULTRA SIGNAL FILTERS
   // ----------------------------------------------------------
 
-  MIN_SCORE: 82,
+  MIN_SCORE: 88,
 
-  MIN_DIRECTION_LEAD: 30,
+  MIN_DIRECTION_LEAD: 40,
 
-  MIN_ADX: 21,
+  MIN_ADX: 22,
 
   MIN_ADX_SLOPE: -0.20,
 
-  MIN_SLOW_ADX: 20,
+  MIN_SLOW_ADX: 22,
 
-  MIN_DI_SPREAD: 4,
+  MIN_DI_SPREAD: 6,
 
-  MIN_SLOW_DI_SPREAD: 4,
+  MIN_SLOW_DI_SPREAD: 6,
 
-  MIN_MOMENTUM: 0.015,
+  MIN_MOMENTUM: 0.020,
 
-  MIN_RR: 1.30,
+  MIN_RR: 1.50,
+
+  // 1H must also have a reasonably strong score.
+  MIN_SLOW_SCORE: 72,
+
+  // ----------------------------------------------------------
+  // PULLBACK / ENTRY TIMING
+  // ----------------------------------------------------------
+
+  // Maximum distance from EMA20 for early pullback entry.
+  PULLBACK_MAX_DISTANCE_ATR: 0.85,
+
+  // Small EMA tolerance for a reclaiming candle.
+  PULLBACK_EMA_TOLERANCE_ATR: 0.20,
 
   // ----------------------------------------------------------
   // TELEGRAM
@@ -82,14 +103,8 @@ const CONFIG = {
   // ----------------------------------------------------------
   // DATA FRESHNESS
   //
-  // IMPORTANT:
   // Candle datetime is the OPEN time of the candle.
-  // Therefore a current 15M candle can naturally be
-  // 0-15 minutes old, and a current 1H candle can
-  // naturally be 0-60 minutes old.
-  //
-  // We now evaluate candle BUCKETS instead of treating
-  // the candle-open timestamp as the actual data age.
+  // We therefore evaluate candle buckets instead of raw age.
   // ----------------------------------------------------------
 
   FRESHNESS: {
@@ -105,22 +120,34 @@ const CONFIG = {
   },
 
   // ----------------------------------------------------------
-  // ATR
+  // ATR / TRADE PLAN
   // ----------------------------------------------------------
 
   ATR_PERIOD: 14,
 
-  SL_ATR_MULTIPLIER: 1.20,
+  SL_ATR_MULTIPLIER: 1.10,
 
-  TP1_R_MULTIPLIER: 1.30,
+  STRUCTURE_BUFFER_ATR: 0.10,
 
-  TP2_R_MULTIPLIER: 2.00,
+  TP1_R_MULTIPLIER: 1.50,
+
+  TP2_R_MULTIPLIER: 2.20,
+
+  // ----------------------------------------------------------
+  // TRADE MANAGEMENT
+  // ----------------------------------------------------------
+
+  BREAK_EVEN_TRIGGER_R: 0.70,
+
+  PROFIT_LOCK_TRIGGER_R: 1.00,
+
+  PROFIT_LOCK_R: 0.20,
 
   // ----------------------------------------------------------
   // ANTI CHASE
   // ----------------------------------------------------------
 
-  MAX_DISTANCE_FROM_EMA20_ATR: 1.60,
+  MAX_DISTANCE_FROM_EMA20_ATR: 1.10,
 
   // ----------------------------------------------------------
   // CACHE
@@ -623,12 +650,12 @@ function normalizeCandles(
 
     .sort(
       (a, b) =>
-        new Date(
+        parseCandleTimestamp(
           a.datetime
-        ).getTime() -
-        new Date(
+        ) -
+        parseCandleTimestamp(
           b.datetime
-        ).getTime()
+        )
     );
 }
 
@@ -728,38 +755,19 @@ async function getCandles(
 
 // ============================================================
 // TIME / FRESHNESS
-//
-// IMPORTANT FIX V7.0.3
-//
-// Twelve Data gives the OPEN TIME of the candle.
-//
-// Example:
-//
-// 15M candle = 16:30
-// Current time = 16:45
-//
-// Raw age = 15 minutes
-// BUT the candle is still the current 15M bucket.
-//
-// Same for 1H:
-//
-// 1H candle = 16:00
-// Current time = 16:45
-//
-// Raw age = 45 minutes
-// BUT the candle is still the current 1H bucket.
-//
-// Therefore we compare candle BUCKETS rather than simply
-// comparing current time minus candle-open time.
 // ============================================================
 
 function candleTimestamp(
   candle
 ) {
+  if (!candle) {
+    return 0;
+  }
+
   const t =
-    new Date(
+    parseCandleTimestamp(
       candle.datetime
-    ).getTime();
+    );
 
   return Number.isFinite(t)
     ? t
@@ -823,10 +831,6 @@ function parseCandleTimestamp(
     return NaN;
   }
 
-  // Twelve Data normally returns:
-  // YYYY-MM-DD HH:mm:ss
-  //
-  // Convert it explicitly to UTC.
   if (
     value.includes(" ") &&
     !value.includes("T")
@@ -839,7 +843,8 @@ function parseCandleTimestamp(
   }
 
   if (
-    !/[zZ]$/.test(value)
+    !/[zZ]$/.test(value) &&
+    !/[+-]\d{2}:\d{2}$/.test(value)
   ) {
     value += "Z";
   }
@@ -934,16 +939,6 @@ function freshnessForCandle(
     Math.floor(
       tsMs / 1000
     );
-
-  // Current market-time bucket.
-  //
-  // 15M:
-  // 16:30 -> bucket 16:30
-  // 16:45 -> bucket 16:45
-  //
-  // 1H:
-  // 16:00 -> bucket 16:00
-  // 16:45 -> bucket 16:00
 
   const currentBucket =
     Math.floor(
@@ -2128,8 +2123,14 @@ function buildIndicators(
   const currentClose =
     closes[i];
 
+  const previousClose =
+    closes[previous];
+
   const currentEma20 =
     ema20[i];
+
+  const previousEma20 =
+    ema20[previous];
 
   const currentEma50 =
     ema50[i];
@@ -2232,8 +2233,12 @@ function buildIndicators(
     price:
       currentClose,
 
+    previousClose,
+
     ema20:
       currentEma20,
+
+    previousEma20,
 
     ema50:
       currentEma50,
@@ -2546,7 +2551,7 @@ function scoreDirection(
 
   if (
     isBuy &&
-    diSpread >= 8
+    diSpread >= 10
   ) {
     diScore = 14;
 
@@ -2566,7 +2571,7 @@ function scoreDirection(
 
   if (
     isSell &&
-    diSpread <= -8
+    diSpread <= -10
   ) {
     diScore = 14;
 
@@ -2641,15 +2646,15 @@ function scoreDirection(
 
   if (
     isBuy &&
-    ind.rsi >= 52 &&
-    ind.rsi <= 68
+    ind.rsi >= 53 &&
+    ind.rsi <= 67
   ) {
     rsiScore = 8;
 
   } else if (
     isSell &&
-    ind.rsi <= 48 &&
-    ind.rsi >= 32
+    ind.rsi <= 47 &&
+    ind.rsi >= 33
   ) {
     rsiScore = 8;
 
@@ -2706,7 +2711,7 @@ function scoreDirection(
 
   if (
     isBuy &&
-    ind.momentum >= 0.08
+    ind.momentum >= 0.10
   ) {
     momentumScore = 8;
 
@@ -2719,7 +2724,7 @@ function scoreDirection(
 
   } else if (
     isSell &&
-    ind.momentum <= -0.08
+    ind.momentum <= -0.10
   ) {
     momentumScore = 8;
 
@@ -2747,7 +2752,7 @@ function scoreDirection(
     isBuy &&
     ind.candle.bullish &&
     ind.candle.bodyRatio >=
-      0.45
+      0.50
   ) {
     candleScore = 6;
 
@@ -2755,7 +2760,7 @@ function scoreDirection(
     isSell &&
     ind.candle.bearish &&
     ind.candle.bodyRatio >=
-      0.45
+      0.50
   ) {
     candleScore = 6;
 
@@ -2788,7 +2793,7 @@ function scoreDirection(
     Number.isFinite(
       ind.adx
     ) &&
-    ind.adx >= 28
+    ind.adx >= 30
   ) {
     adxScore = 5;
 
@@ -2818,7 +2823,7 @@ function scoreDirection(
     Number.isFinite(
       ind.adxSlope
     ) &&
-    ind.adxSlope >= 0.5
+    ind.adxSlope >= 0.75
   ) {
     adxSlopeScore = 3;
 
@@ -2840,7 +2845,13 @@ function scoreDirection(
 
   return {
     total:
-      Math.round(score),
+      Math.round(
+        clamp(
+          score,
+          0,
+          100
+        )
+      ),
 
     breakdown,
 
@@ -2850,13 +2861,180 @@ function scoreDirection(
 
 
 // ============================================================
+// PULLBACK / EARLY ENTRY CHECK
+// ============================================================
+
+function pullbackEntryCheck(
+  fast,
+  direction
+) {
+  if (
+    !fast ||
+    !Number.isFinite(
+      fast.price
+    ) ||
+    !Number.isFinite(
+      fast.ema20
+    ) ||
+    !Number.isFinite(
+      fast.atr
+    ) ||
+    fast.atr <= 0
+  ) {
+    return {
+      ok: false,
+
+      reason:
+        "Invalid pullback data"
+    };
+  }
+
+  const distance =
+    Math.abs(
+      fast.price -
+      fast.ema20
+    );
+
+  const distanceATR =
+    distance /
+    fast.atr;
+
+  if (
+    distanceATR >
+    CONFIG.PULLBACK_MAX_DISTANCE_ATR
+  ) {
+    return {
+      ok: false,
+
+      reason:
+        `Entry too far from EMA20: ${round(distanceATR, 2)} ATR`,
+
+      distanceATR:
+        round(
+          distanceATR,
+          2
+        )
+    };
+  }
+
+  const tolerance =
+    fast.atr *
+    CONFIG.PULLBACK_EMA_TOLERANCE_ATR;
+
+  const candleAligned =
+    direction === "BUY"
+      ? fast.candle?.bullish === true
+      : fast.candle?.bearish === true;
+
+  const currentSideOk =
+    direction === "BUY"
+      ? fast.price >=
+        fast.ema20 -
+          tolerance
+      : fast.price <=
+        fast.ema20 +
+          tolerance;
+
+  if (!currentSideOk) {
+    return {
+      ok: false,
+
+      reason:
+        `Price is on the wrong side of EMA20 for ${direction}`,
+
+      distanceATR:
+        round(
+          distanceATR,
+          2
+        )
+    };
+  }
+
+  const reclaimedEMA =
+    direction === "BUY"
+      ? safeNumber(
+          fast.previousClose
+        ) <=
+          safeNumber(
+            fast.previousEma20
+          ) &&
+        fast.price >
+          fast.ema20
+      : safeNumber(
+          fast.previousClose
+        ) >=
+          safeNumber(
+            fast.previousEma20
+          ) &&
+        fast.price <
+          fast.ema20;
+
+  if (
+    !reclaimedEMA &&
+    !candleAligned
+  ) {
+    return {
+      ok: false,
+
+      reason:
+        "No clean pullback/reclaim confirmation",
+
+      distanceATR:
+        round(
+          distanceATR,
+          2
+        )
+    };
+  }
+
+  return {
+    ok: true,
+
+    reason:
+      reclaimedEMA
+        ? "EMA20 reclaim / early pullback entry"
+        : "Price inside early pullback zone",
+
+    distanceATR:
+      round(
+        distanceATR,
+        2
+      ),
+
+    reclaimedEMA,
+
+    candleAligned,
+
+    ema20:
+      round(
+        fast.ema20,
+        2
+      ),
+
+    atr:
+      round(
+        fast.atr,
+        2
+      )
+  };
+}
+
+
+// ============================================================
 // DIRECTION CHECK
 //
-// V7.0.3
+// V7.0.4
 //
-// 1H remains strict.
-// 15M needs enough confirmations,
-// but not every indicator must agree.
+// 1H:
+// - Trend must agree
+// - Structure must agree
+// - DI must agree
+// - MACD must agree
+// - ADX must be strong
+//
+// 15M:
+// - Requires strong multi-factor confirmation
+// - Pullback entry is checked separately
 // ============================================================
 
 function directionCheck(
@@ -2889,7 +3067,7 @@ function directionCheck(
 
       confirmations: 0,
 
-      minimumConfirmations: 0,
+      minimumConfirmations: 5,
 
       reasons: [
         `1H trend is ${slowTrend}, expected ${direction}`
@@ -2897,76 +3075,71 @@ function directionCheck(
     };
   }
 
-  let confirmations = 0;
+  const slowChecks = [
+    {
+      name:
+        "1H trend",
 
-  const checks = [];
+      ok:
+        slowTrend ===
+        direction
+    },
 
-  // 1H trend
-  checks.push({
-    name:
-      "1H trend",
+    {
+      name:
+        "1H structure",
 
-    ok:
-      slowTrend ===
-      direction
-  });
+      ok:
+        slow.structure ===
+        direction
+    },
 
-  // 1H structure
-  checks.push({
-    name:
-      "1H structure",
+    {
+      name:
+        "1H DI",
 
-    ok:
-      slow.structure ===
-        direction ||
-      slow.structure ===
-        "NEUTRAL"
-  });
+      ok:
+        direction === "BUY"
+          ? slow.diSpread >=
+            CONFIG.MIN_SLOW_DI_SPREAD
+          : slow.diSpread <=
+            -CONFIG.MIN_SLOW_DI_SPREAD
+    },
 
-  // 1H DI
-  checks.push({
-    name:
-      "1H DI",
+    {
+      name:
+        "1H MACD",
 
-    ok:
-      direction === "BUY"
-        ? slow.diSpread >=
-          CONFIG.MIN_SLOW_DI_SPREAD
-        : slow.diSpread <=
-          -CONFIG.MIN_SLOW_DI_SPREAD
-  });
+      ok:
+        direction === "BUY"
+          ? slow.macd >
+              slow.macdSignal &&
+            slow.macdHistogram > 0
+          : slow.macd <
+              slow.macdSignal &&
+            slow.macdHistogram < 0
+    },
 
-  // 1H MACD
-  checks.push({
-    name:
-      "1H MACD",
+    {
+      name:
+        "1H ADX",
 
-    ok:
-      direction === "BUY"
-        ? slow.macd >=
-          slow.macdSignal
-        : slow.macd <=
-          slow.macdSignal
-  });
+      ok:
+        Number.isFinite(
+          slow.adx
+        ) &&
+        slow.adx >=
+          CONFIG.MIN_SLOW_ADX
+    }
+  ];
 
-  // 1H ADX
-  checks.push({
-    name:
-      "1H ADX",
-
-    ok:
-      Number.isFinite(
-        slow.adx
-      ) &&
-      slow.adx >=
-        CONFIG.MIN_SLOW_ADX
-  });
+  let slowConfirmations = 0;
 
   for (
-    const check of checks
+    const check of slowChecks
   ) {
     if (check.ok) {
-      confirmations++;
+      slowConfirmations++;
 
       reasons.push(
         `${check.name} confirmed`
@@ -2974,16 +3147,24 @@ function directionCheck(
     }
   }
 
-  // Need at least 4/5 slow checks.
+  // ALL 5 of 5 for ultra signal.
   if (
-    confirmations < 4
+    slowConfirmations <
+    5
   ) {
     return {
       ok: false,
 
-      confirmations,
+      confirmations:
+        slowConfirmations,
 
-      minimumConfirmations: 4,
+      minimumConfirmations:
+        5,
+
+      slowConfirmations,
+
+      fastConfirmations:
+        0,
 
       reasons
     };
@@ -2993,107 +3174,109 @@ function directionCheck(
   // 15M CONFIRMATIONS
   // ----------------------------------------------------------
 
-  const fastChecks = [];
+  const fastChecks = [
+    {
+      name:
+        "15M trend",
 
-  fastChecks.push({
-    name:
-      "15M trend",
+      ok:
+        fastTrend ===
+        direction
+    },
 
-    ok:
-      fastTrend ===
-      direction
-  });
+    {
+      name:
+        "15M structure",
 
-  fastChecks.push({
-    name:
-      "15M structure",
+      ok:
+        fast.structure ===
+          direction ||
+        fast.structure ===
+          "NEUTRAL"
+    },
 
-    ok:
-      fast.structure ===
-        direction ||
-      fast.structure ===
-        "NEUTRAL"
-  });
+    {
+      name:
+        "15M DI",
 
-  fastChecks.push({
-    name:
-      "15M DI",
+      ok:
+        direction === "BUY"
+          ? fast.diSpread >=
+            CONFIG.MIN_DI_SPREAD
+          : fast.diSpread <=
+            -CONFIG.MIN_DI_SPREAD
+    },
 
-    ok:
-      direction === "BUY"
-        ? fast.diSpread >=
-          CONFIG.MIN_DI_SPREAD
-        : fast.diSpread <=
-          -CONFIG.MIN_DI_SPREAD
-  });
+    {
+      name:
+        "15M MACD",
 
-  fastChecks.push({
-    name:
-      "15M MACD",
+      ok:
+        direction === "BUY"
+          ? fast.macd >
+              fast.macdSignal &&
+            fast.macdHistogram > 0
+          : fast.macd <
+              fast.macdSignal &&
+            fast.macdHistogram < 0
+    },
 
-    ok:
-      direction === "BUY"
-        ? fast.macd >=
-          fast.macdSignal
-        : fast.macd <=
-          fast.macdSignal
-  });
+    {
+      name:
+        "15M momentum",
 
-  fastChecks.push({
-    name:
-      "15M momentum",
+      ok:
+        direction === "BUY"
+          ? fast.momentum >=
+            CONFIG.MIN_MOMENTUM
+          : fast.momentum <=
+            -CONFIG.MIN_MOMENTUM
+    },
 
-    ok:
-      direction === "BUY"
-        ? fast.momentum >=
-          CONFIG.MIN_MOMENTUM
-        : fast.momentum <=
-          -CONFIG.MIN_MOMENTUM
-  });
+    {
+      name:
+        "15M RSI",
 
-  fastChecks.push({
-    name:
-      "15M RSI",
+      ok:
+        direction === "BUY"
+          ? fast.rsi >= 52
+          : fast.rsi <= 48
+    },
 
-    ok:
-      direction === "BUY"
-        ? fast.rsi >= 50
-        : fast.rsi <= 50
-  });
+    {
+      name:
+        "15M candle",
 
-  fastChecks.push({
-    name:
-      "15M candle",
+      ok:
+        direction === "BUY"
+          ? fast.candle.bullish
+          : fast.candle.bearish
+    },
 
-    ok:
-      direction === "BUY"
-        ? fast.candle.bullish
-        : fast.candle.bearish
-  });
+    {
+      name:
+        "15M ADX",
 
-  fastChecks.push({
-    name:
-      "15M ADX",
+      ok:
+        Number.isFinite(
+          fast.adx
+        ) &&
+        fast.adx >=
+          CONFIG.MIN_ADX
+    },
 
-    ok:
-      Number.isFinite(
-        fast.adx
-      ) &&
-      fast.adx >=
-        CONFIG.MIN_ADX
-  });
+    {
+      name:
+        "15M ADX slope",
 
-  fastChecks.push({
-    name:
-      "15M ADX slope",
-
-    ok:
-      Number.isFinite(
-        fast.adxSlope
-      ) &&
-      fast.adxSlope >=
-        CONFIG.MIN_ADX_SLOPE
-  });
+      ok:
+        Number.isFinite(
+          fast.adxSlope
+        ) &&
+        fast.adxSlope >=
+          CONFIG.MIN_ADX_SLOPE
+    }
+  ];
 
   let fastConfirmations = 0;
 
@@ -3110,7 +3293,7 @@ function directionCheck(
   }
 
   const minimumFast =
-    5;
+    6;
 
   if (
     fastConfirmations <
@@ -3120,11 +3303,10 @@ function directionCheck(
       ok: false,
 
       confirmations:
-        confirmations +
+        slowConfirmations +
         fastConfirmations,
 
-      slowConfirmations:
-        confirmations,
+      slowConfirmations,
 
       fastConfirmations,
 
@@ -3161,11 +3343,10 @@ function directionCheck(
         ok: false,
 
         confirmations:
-          confirmations +
+          slowConfirmations +
           fastConfirmations,
 
-        slowConfirmations:
-          confirmations,
+        slowConfirmations,
 
         fastConfirmations,
 
@@ -3185,11 +3366,10 @@ function directionCheck(
     ok: true,
 
     confirmations:
-      confirmations +
+      slowConfirmations +
       fastConfirmations,
 
-    slowConfirmations:
-      confirmations,
+    slowConfirmations,
 
     fastConfirmations,
 
@@ -3291,6 +3471,10 @@ function buildTradePlan(
     atrValue *
     CONFIG.SL_ATR_MULTIPLIER;
 
+  const structureBuffer =
+    atrValue *
+    CONFIG.STRUCTURE_BUFFER_ATR;
+
   let stopLoss;
 
   if (
@@ -3302,7 +3486,7 @@ function buildTradePlan(
           atrStopDistance,
 
         structureLow -
-          atrValue * 0.15
+          structureBuffer
       );
 
   } else {
@@ -3312,7 +3496,7 @@ function buildTradePlan(
           atrStopDistance,
 
         structureHigh +
-          atrValue * 0.15
+          structureBuffer
       );
   }
 
@@ -3396,6 +3580,72 @@ function buildTradePlan(
     };
   }
 
+  // ----------------------------------------------------------
+  // BREAK EVEN
+  // ----------------------------------------------------------
+
+  const breakEvenTriggerDistance =
+    risk *
+    CONFIG.BREAK_EVEN_TRIGGER_R;
+
+  let breakEvenTrigger;
+
+  if (
+    direction === "BUY"
+  ) {
+    breakEvenTrigger =
+      entry +
+      breakEvenTriggerDistance;
+  } else {
+    breakEvenTrigger =
+      entry -
+      breakEvenTriggerDistance;
+  }
+
+  // ----------------------------------------------------------
+  // PROFIT LOCK
+  // ----------------------------------------------------------
+
+  const profitLockTriggerDistance =
+    risk *
+    CONFIG.PROFIT_LOCK_TRIGGER_R;
+
+  const profitLockAmount =
+    risk *
+    CONFIG.PROFIT_LOCK_R;
+
+  let profitLockTrigger;
+  let profitLockStop;
+
+  if (
+    direction === "BUY"
+  ) {
+    profitLockTrigger =
+      entry +
+      profitLockTriggerDistance;
+
+    profitLockStop =
+      entry +
+      profitLockAmount;
+  } else {
+    profitLockTrigger =
+      entry -
+      profitLockTriggerDistance;
+
+    profitLockStop =
+      entry -
+      profitLockAmount;
+  }
+
+  // ----------------------------------------------------------
+  // EARLY INVALIDATION
+  // ----------------------------------------------------------
+
+  const invalidation =
+    direction === "BUY"
+      ? "15M candle closes below EMA20 AND MACD histogram turns negative"
+      : "15M candle closes above EMA20 AND MACD histogram turns positive";
+
   return {
     ok: true,
 
@@ -3459,7 +3709,44 @@ function buildTradePlan(
       round(
         structureLow,
         2
-      )
+      ),
+
+    management: {
+      breakEvenTriggerR:
+        CONFIG.BREAK_EVEN_TRIGGER_R,
+
+      breakEvenTrigger:
+        round(
+          breakEvenTrigger,
+          2
+        ),
+
+      breakEvenStop:
+        round(
+          entry,
+          2
+        ),
+
+      profitLockTriggerR:
+        CONFIG.PROFIT_LOCK_TRIGGER_R,
+
+      profitLockTrigger:
+        round(
+          profitLockTrigger,
+          2
+        ),
+
+      profitLockR:
+        CONFIG.PROFIT_LOCK_R,
+
+      profitLockStop:
+        round(
+          profitLockStop,
+          2
+        ),
+
+      invalidation
+    }
   };
 }
 
@@ -3510,6 +3797,8 @@ function generateSignal(
 
       score: 0,
 
+      slowScore: 0,
+
       buyScore: 0,
 
       sellScore: 0,
@@ -3546,6 +3835,8 @@ function generateSignal(
 
       score: 0,
 
+      slowScore: 0,
+
       buyScore: 0,
 
       sellScore: 0,
@@ -3578,6 +3869,18 @@ function generateSignal(
       "SELL"
     );
 
+  const slowBuy =
+    scoreDirection(
+      slow,
+      "BUY"
+    );
+
+  const slowSell =
+    scoreDirection(
+      slow,
+      "SELL"
+    );
+
   const buyScore =
     buy.total;
 
@@ -3595,6 +3898,11 @@ function generateSignal(
       buyScore,
       sellScore
     );
+
+  const slowScore =
+    direction === "BUY"
+      ? slowBuy.total
+      : slowSell.total;
 
   const losingScore =
     Math.min(
@@ -3631,6 +3939,8 @@ function generateSignal(
 
       score,
 
+      slowScore,
+
       buyScore,
 
       sellScore,
@@ -3639,6 +3949,53 @@ function generateSignal(
 
       reason:
         `Score ${score} below minimum ${CONFIG.MIN_SCORE}`,
+
+      session,
+
+      freshness,
+
+      fast,
+
+      slow,
+
+      scoreBreakdown:
+        selected.breakdown,
+
+      tradePlan:
+        null
+    };
+  }
+
+  // ----------------------------------------------------------
+  // 1H SCORE CHECK
+  // ----------------------------------------------------------
+
+  if (
+    slowScore <
+    CONFIG.MIN_SLOW_SCORE
+  ) {
+    return {
+      version:
+        CONFIG.VERSION,
+
+      symbol:
+        CONFIG.SYMBOL,
+
+      signal:
+        "WAIT",
+
+      score,
+
+      slowScore,
+
+      buyScore,
+
+      sellScore,
+
+      directionLead,
+
+      reason:
+        `1H score ${slowScore} below minimum ${CONFIG.MIN_SLOW_SCORE}`,
 
       session,
 
@@ -3676,6 +4033,8 @@ function generateSignal(
 
       score,
 
+      slowScore,
+
       buyScore,
 
       sellScore,
@@ -3702,7 +4061,7 @@ function generateSignal(
   }
 
   // ----------------------------------------------------------
-  // DIRECTION CONFIRMATION
+  // STRONG DIRECTION CONFIRMATION
   // ----------------------------------------------------------
 
   const confirmation =
@@ -3727,6 +4086,8 @@ function generateSignal(
 
       score,
 
+      slowScore,
+
       buyScore,
 
       sellScore,
@@ -3734,9 +4095,65 @@ function generateSignal(
       directionLead,
 
       reason:
-        "Multi-timeframe confirmation failed",
+        "Multi-timeframe strong confirmation failed",
 
       confirmation,
+
+      session,
+
+      freshness,
+
+      fast,
+
+      slow,
+
+      scoreBreakdown:
+        selected.breakdown,
+
+      tradePlan:
+        null
+    };
+  }
+
+  // ----------------------------------------------------------
+  // EARLY PULLBACK ENTRY CHECK
+  // ----------------------------------------------------------
+
+  const pullback =
+    pullbackEntryCheck(
+      fast,
+      direction
+    );
+
+  if (
+    !pullback.ok
+  ) {
+    return {
+      version:
+        CONFIG.VERSION,
+
+      symbol:
+        CONFIG.SYMBOL,
+
+      signal:
+        "WAIT",
+
+      score,
+
+      slowScore,
+
+      buyScore,
+
+      sellScore,
+
+      directionLead,
+
+      reason:
+        pullback.reason,
+
+      confirmation,
+
+      pullback,
 
       session,
 
@@ -3780,6 +4197,8 @@ function generateSignal(
 
       score,
 
+      slowScore,
+
       buyScore,
 
       sellScore,
@@ -3790,6 +4209,8 @@ function generateSignal(
         tradePlan.reason,
 
       confirmation,
+
+      pullback,
 
       session,
 
@@ -3807,7 +4228,7 @@ function generateSignal(
   }
 
   // ----------------------------------------------------------
-  // FINAL SIGNAL
+  // FINAL ULTRA SIGNAL
   // ----------------------------------------------------------
 
   return {
@@ -3822,6 +4243,8 @@ function generateSignal(
 
     score,
 
+    slowScore,
+
     buyScore,
 
     sellScore,
@@ -3829,9 +4252,11 @@ function generateSignal(
     directionLead,
 
     reason:
-      `${direction} confirmed by 15M + 1H`,
+      `${direction} ULTRA confirmed by 15M + 1H + Pullback`,
 
     confirmation,
+
+    pullback,
 
     session,
 
@@ -3888,6 +4313,10 @@ function formatSignalMessage(
   const p =
     signal.tradePlan;
 
+  const m =
+    p?.management ||
+    {};
+
   const f =
     signal.fast;
 
@@ -3909,13 +4338,15 @@ function formatSignalMessage(
 
     ``,
 
-    `${emoji} ${title}`,
+    `${emoji} ${title} — ULTRA`,
 
     `XAU/USD`,
 
     ``,
 
-    `⭐ Score: ${signal.score}/100`,
+    `⭐ 15M Score: ${signal.score}/100`,
+
+    `⭐ 1H Score: ${signal.slowScore}/100`,
 
     `📊 Buy Score: ${signal.buyScore}/100`,
 
@@ -3938,6 +4369,12 @@ function formatSignalMessage(
     `📈 RR1: ${fmt(p.rr1)}`,
 
     `📈 RR2: ${fmt(p.rr2)}`,
+
+    ``,
+
+    `⚡ Break-even: ${fmt(m.breakEvenTrigger)} (${m.breakEvenTriggerR ?? "-"}R)`,
+
+    `🔒 Profit Lock: ${fmt(m.profitLockTrigger)} → SL ${fmt(m.profitLockStop)}`,
 
     ``,
 
@@ -3965,11 +4402,21 @@ function formatSignalMessage(
 
     ``,
 
+    `🎯 Entry Timing: ${signal.pullback?.reason || "-"}`,
+
+    `📏 Pullback Distance: ${fmt(signal.pullback?.distanceATR, 2)} ATR`,
+
+    ``,
+
+    `🚨 Invalidation: ${m.invalidation || "-"}`,
+
+    ``,
+
     `🧠 Reason: ${signal.reason}`,
 
     ``,
 
-    `⚠️ این موتور فقط تحلیل شرایط فعلی بازار را انجام می‌دهد و سود یا موفقیت معامله را تضمین نمی‌کند.`,
+    `⚠️ این موتور تحلیل و مدیریت پیشنهادی معامله را ارائه می‌کند و سود یا موفقیت معامله را تضمین نمی‌کند.`,
 
     ``,
 
@@ -4014,6 +4461,8 @@ function formatWaitStatusMessage(
 
     `⭐ Score: ${signal.score ?? "-"}/100`,
 
+    `⭐ 1H Score: ${signal.slowScore ?? "-"}/100`,
+
     `🟢 Buy Score: ${signal.buyScore ?? "-"}`,
 
     `🔴 Sell Score: ${signal.sellScore ?? "-"}`,
@@ -4056,7 +4505,7 @@ function formatWaitStatusMessage(
 
     ``,
 
-    `سیگنال فقط زمانی ارسال می‌شود که شرایط کامل معامله تأیید شود.`,
+    `سیگنال قوی فقط زمانی ارسال می‌شود که امتیاز، روند 1H، تأیید 15M و نقطه ورود همگی مناسب باشند.`,
 
     ``,
 
@@ -4079,8 +4528,7 @@ async function getNews(
   }
 
   // Intentionally conservative.
-  // The signal engine must continue working even if
-  // a news provider is unavailable.
+  // Signal engine continues working if no news provider exists.
 
   return [];
 }
@@ -4171,6 +4619,9 @@ async function saveLastSignal(
 
         score:
           signal.score,
+
+        slowScore:
+          signal.slowScore,
 
         entry:
           signal.tradePlan?.entry,
@@ -4638,10 +5089,6 @@ async function handleTelegramWebhook(
     );
   }
 
-  // ----------------------------------------------------------
-  // BASIC WEBHOOK RESPONSE
-  // ----------------------------------------------------------
-
   const message =
     update?.message;
 
@@ -5014,6 +5461,9 @@ async function handleRequest(
       minScore:
         CONFIG.MIN_SCORE,
 
+      minSlowScore:
+        CONFIG.MIN_SLOW_SCORE,
+
       minDirectionLead:
         CONFIG.MIN_DIRECTION_LEAD,
 
@@ -5037,6 +5487,27 @@ async function handleRequest(
 
       minRR:
         CONFIG.MIN_RR,
+
+      pullback:
+        {
+          maxDistanceATR:
+            CONFIG.PULLBACK_MAX_DISTANCE_ATR,
+
+          emaToleranceATR:
+            CONFIG.PULLBACK_EMA_TOLERANCE_ATR
+        },
+
+      tradeManagement:
+        {
+          breakEvenTriggerR:
+            CONFIG.BREAK_EVEN_TRIGGER_R,
+
+          profitLockTriggerR:
+            CONFIG.PROFIT_LOCK_TRIGGER_R,
+
+          profitLockR:
+            CONFIG.PROFIT_LOCK_R
+        },
 
       freshness:
         CONFIG.FRESHNESS,
@@ -5132,7 +5603,6 @@ async function scheduled(
           message
         );
 
-        // Try to notify Telegram.
         try {
           await sendTelegramToChat(
             env,
