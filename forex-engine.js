@@ -1,21 +1,32 @@
 // ============================================================
-// FOREX SIGNAL ENGINE V6.9.1 — GOLD QUALITY
+// FOREX SIGNAL ENGINE V7.0.0 — GOLD QUALITY
 // Cloudflare Worker + Twelve Data + Telegram
 //
 // PRIMARY: XAU/USD
 // TIMEFRAMES: 15M + 1H
 //
-// V6.9.1:
+// V7.0.0:
+// - Strict multi-timeframe confluence
+// - Fixed 100-point score model
+// - Detailed score breakdown
+// - Pullback-first entry logic
+// - Anti-chase protection
+// - ATR + structure based SL
+// - TP1 / TP2 / TP3
+// - Break-even rules
+// - ATR trailing rules
+// - Early-exit / invalidation rules
+// - Pending order expiry
+// - Market structure room check
+// - Fresh-data protection for signal generation
 // - Twelve Data rate-limit protection
 // - 15M memory cache: 60s
 // - 1H memory cache: 5m
 // - stale-cache fallback up to 15m
-// - request locks to prevent duplicate concurrent calls
+// - request locks
 // - explicit HTTP 429 handling
-// - Retry-After / API-credit headers exposed in health
 // - Telegram webhook commands
 // - Cron signal/news support
-// - Strict Gold Quality filters
 // - DIRECT /test-price endpoint
 // - FIX: candles ordered oldest -> newest
 //
@@ -29,34 +40,57 @@
 // KV
 // ============================================================
 
+
 const CONFIG = {
-  VERSION: "V6.9.1",
+
+  VERSION: "V7.0.0",
 
   SYMBOL: "XAU/USD",
+
   INTERVAL_FAST: "15min",
   INTERVAL_SLOW: "1h",
 
   OUTPUT_SIZE_FAST: 100,
   OUTPUT_SIZE_SLOW: 100,
 
+
+  // ----------------------------------------------------------
+  // SIGNAL QUALITY
+  // ----------------------------------------------------------
+
   MIN_SCORE: 90,
+
   MIN_DIRECTION_LEAD: 45,
 
   MIN_ADX: 23,
   MIN_ADX_SLOPE: 0.5,
+
   MIN_SLOW_ADX: 20,
+
   MIN_DI_SPREAD: 6,
+  MIN_SLOW_DI_SPREAD: 4,
+
   MIN_MOMENTUM: 0.03,
+
   MIN_RR: 1.30,
 
-  MAX_EMA20_DISTANCE_ATR: 1.8,
 
-  ATR_SL_MULTIPLIER: 1.20,
-  ATR_ENTRY_MULTIPLIER: 0.55,
+  // ----------------------------------------------------------
+  // ANTI-CHASE
+  // ----------------------------------------------------------
 
-  MAX_ENTRY_DISTANCE_ATR: 1.20,
-  MAX_ENTRY_DISTANCE_PERCENT: 0.55,
-  MIN_ENTRY_DISTANCE_ATR: 0.08,
+  MAX_EMA20_DISTANCE_ATR: 1.25,
+
+  MAX_ENTRY_DISTANCE_ATR: 0.90,
+
+  MAX_ENTRY_DISTANCE_PERCENT: 0.45,
+
+  MIN_ENTRY_DISTANCE_ATR: 0.10,
+
+
+  // ----------------------------------------------------------
+  // RSI
+  // ----------------------------------------------------------
 
   RSI_BULL_MIN: 53,
   RSI_BULL_MAX: 67,
@@ -64,30 +98,130 @@ const CONFIG = {
   RSI_BEAR_MIN: 33,
   RSI_BEAR_MAX: 47,
 
+
+  // ----------------------------------------------------------
+  // TRADE PLAN
+  // ----------------------------------------------------------
+
+  ATR_SL_MULTIPLIER: 1.15,
+
+  ATR_ENTRY_MULTIPLIER: 0.55,
+
+  STRUCTURE_ENTRY_ATR: 0.20,
+
+  SL_BUFFER_ATR: 0.12,
+
+  MAX_RISK_ATR: 1.80,
+
+  TP1_R: 1.30,
+  TP2_R: 2.20,
+  TP3_R: 3.20,
+
+
+  // ----------------------------------------------------------
+  // TRADE MANAGEMENT
+  // ----------------------------------------------------------
+
+  PENDING_EXPIRY_MINUTES: 45,
+
+  BREAK_EVEN_AT_R: 0.80,
+
+  BREAK_EVEN_PLUS_R: 0.10,
+
+  TRAIL_START_R: 1.20,
+
+  TRAIL_ATR_MULTIPLIER: 0.90,
+
+
+  TP1_CLOSE_PERCENT: 30,
+  TP2_CLOSE_PERCENT: 40,
+  TP3_CLOSE_PERCENT: 30,
+
+
+  // ----------------------------------------------------------
+  // EARLY EXIT
+  // ----------------------------------------------------------
+
+  EARLY_EXIT_MIN_CONFIRMATIONS: 2,
+
+  EARLY_EXIT_ATR: 0.65,
+
+
+  // ----------------------------------------------------------
+  // NEWS
+  // ----------------------------------------------------------
+
   NEWS_BEFORE_MINUTES: 45,
+
   NEWS_AFTER_MINUTES: 30,
+
   NEWS_ALERT_MINUTES: 30,
+
   NEWS_CACHE_SECONDS: 900,
+
   NEWS_LOOKAHEAD_HOURS: 48,
 
+
+  // ----------------------------------------------------------
+  // DEDUPE
+  // ----------------------------------------------------------
+
   SIGNAL_DEDUPE_SECONDS: 21600,
+
   NEWS_DEDUPE_SECONDS: 86400,
 
+
+  // ----------------------------------------------------------
+  // SESSION
+  // ----------------------------------------------------------
+
   SESSION_START_UTC: 7,
+
   SESSION_END_UTC: 20,
 
+
+  // ----------------------------------------------------------
+  // CACHE
+  // ----------------------------------------------------------
+
   FAST_CACHE_TTL_MS: 60_000,
+
   SLOW_CACHE_TTL_MS: 300_000,
+
   STALE_MAX_MS: 900_000,
+
+
+  // Maximum data age allowed for signal generation.
+  // Older cached data may still be returned by API,
+  // but it will NOT be allowed to create a fresh signal.
+  MAX_SIGNAL_FAST_AGE_MS: 120_000,
+
+  MAX_SIGNAL_SLOW_AGE_MS: 420_000,
+
+
+  // ----------------------------------------------------------
+  // REQUEST
+  // ----------------------------------------------------------
 
   REQUEST_TIMEOUT_MS: 12_000,
 
+
+  // ----------------------------------------------------------
+  // TELEGRAM
+  // ----------------------------------------------------------
+
   TELEGRAM_ENABLED: true,
+
   TELEGRAM_SEND_SIGNAL: true,
+
   TELEGRAM_SEND_NEWS: true,
 
-  FOOTER: "عبدالحکیم داودی | ترید عالی"
+
+  FOOTER:
+    "عبدالحکیم داودی | ترید عالی"
+
 };
+
 
 
 // ============================================================
@@ -95,7 +229,9 @@ const CONFIG = {
 // ============================================================
 
 const memory = {
+
   candles: {
+
     fast: {
       data: null,
       fetchedAt: 0,
@@ -111,66 +247,51 @@ const memory = {
       creditsUsed: null,
       lastError: null
     }
+
   },
 
   locks: {
+
     fast: null,
+
     slow: null
+
   },
 
   news: {
+
     data: null,
+
     fetchedAt: 0,
+
     lastError: null
+
   },
 
   rateLimitUntil: 0,
+
   rateLimitRetryAfter: null
+
 };
+
 
 
 // ============================================================
 // HELPERS
 // ============================================================
 
-function getEnv(env, key, fallback = "") {
-  const value = env?.[key];
+function getEnv(
+  env,
+  key,
+  fallback = ""
+) {
 
-  if (value === undefined || value === null) {
-    return fallback;
-  }
+  const value =
+    env?.[key];
 
-  return String(value);
-}
-
-
-function num(value, fallback = 0) {
-  const n = Number(value);
-
-  return Number.isFinite(n)
-    ? n
-    : fallback;
-}
-
-
-function round(value, digits = 2) {
-  const n = Number(value);
-
-  if (!Number.isFinite(n)) {
-    return null;
-  }
-
-  const p = 10 ** digits;
-
-  return Math.round(n * p) / p;
-}
-
-
-function safeValue(value, fallback = "-") {
   if (
-    value === null ||
     value === undefined ||
-    !Number.isFinite(Number(value))
+    value === null
   ) {
     return fallback;
   }
@@ -179,27 +300,120 @@ function safeValue(value, fallback = "-") {
 }
 
 
+
+function num(
+  value,
+  fallback = 0
+) {
+
+  const n =
+    Number(value);
+
+  return Number.isFinite(n)
+    ? n
+    : fallback;
+}
+
+
+
+function round(
+  value,
+  digits = 2
+) {
+
+  const n =
+    Number(value);
+
+  if (
+    !Number.isFinite(n)
+  ) {
+    return null;
+  }
+
+  const p =
+    10 ** digits;
+
+  return Math.round(
+    n * p
+  ) / p;
+}
+
+
+
+function safeValue(
+  value,
+  fallback = "-"
+) {
+
+  if (
+    value === null ||
+    value === undefined ||
+    !Number.isFinite(
+      Number(value)
+    )
+  ) {
+    return fallback;
+  }
+
+  return String(value);
+}
+
+
+
+function clamp(
+  value,
+  min,
+  max
+) {
+
+  return Math.min(
+    Math.max(
+      value,
+      min
+    ),
+    max
+  );
+}
+
+
+
 async function fetchWithTimeout(
   url,
   options = {},
   timeout = CONFIG.REQUEST_TIMEOUT_MS
 ) {
-  const controller = new AbortController();
 
-  const timer = setTimeout(
-    () => controller.abort(),
-    timeout
-  );
+  const controller =
+    new AbortController();
+
+  const timer =
+    setTimeout(
+      () =>
+        controller.abort(),
+      timeout
+    );
 
   try {
-    return await fetch(url, {
-      ...options,
-      signal: controller.signal
-    });
+
+    return await fetch(
+      url,
+      {
+        ...options,
+        signal:
+          controller.signal
+      }
+    );
+
   } finally {
-    clearTimeout(timer);
+
+    clearTimeout(
+      timer
+    );
+
   }
+
 }
+
 
 
 function jsonResponse(
@@ -207,39 +421,61 @@ function jsonResponse(
   status = 200,
   extraHeaders = {}
 ) {
+
   return new Response(
-    JSON.stringify(data, null, 2),
+    JSON.stringify(
+      data,
+      null,
+      2
+    ),
     {
       status,
-
       headers: {
         "content-type":
           "application/json; charset=UTF-8",
-
         ...extraHeaders
       }
     }
   );
+
 }
+
 
 
 // ============================================================
 // KV DEDUPE
 // ============================================================
 
-async function alreadySent(env, key) {
-  if (!env?.KV) {
+async function alreadySent(
+  env,
+  key
+) {
+
+  if (
+    !env?.KV
+  ) {
     return false;
   }
 
   try {
-    const value = await env.KV.get(key);
 
-    return Boolean(value);
+    const value =
+      await env.KV.get(
+        key
+      );
+
+    return Boolean(
+      value
+    );
+
   } catch {
+
     return false;
+
   }
+
 }
+
 
 
 async function markSent(
@@ -247,20 +483,28 @@ async function markSent(
   key,
   ttlSeconds
 ) {
-  if (!env?.KV) {
+
+  if (
+    !env?.KV
+  ) {
     return;
   }
 
   try {
+
     await env.KV.put(
       key,
       "1",
       {
-        expirationTtl: ttlSeconds
+        expirationTtl:
+          ttlSeconds
       }
     );
+
   } catch {}
+
 }
+
 
 
 // ============================================================
@@ -272,8 +516,12 @@ function twelveDataUrl(
   interval,
   outputsize
 ) {
+
   const apiKey =
-    getEnv(env, "TWELVE_DATA_API_KEY");
+    getEnv(
+      env,
+      "TWELVE_DATA_API_KEY"
+    );
 
   const url =
     new URL(
@@ -292,7 +540,9 @@ function twelveDataUrl(
 
   url.searchParams.set(
     "outputsize",
-    String(outputsize)
+    String(
+      outputsize
+    )
   );
 
   url.searchParams.set(
@@ -311,84 +561,152 @@ function twelveDataUrl(
   );
 
   return url;
+
 }
 
 
-function candleCacheKey(interval) {
-  return interval === CONFIG.INTERVAL_FAST
+
+function candleCacheKey(
+  interval
+) {
+
+  return interval ===
+    CONFIG.INTERVAL_FAST
     ? "fast"
     : "slow";
+
 }
 
 
-function parseTwelveDataValues(json) {
+
+// ============================================================
+// PARSE CANDLES
+// ============================================================
+
+function parseTwelveDataValues(
+  json
+) {
+
   if (
     !json ||
-    !Array.isArray(json.values) ||
+    !Array.isArray(
+      json.values
+    ) ||
     json.values.length < 30
   ) {
+
     throw new Error(
       json?.message ||
       "Twelve Data returned insufficient candle data."
     );
+
   }
+
 
   const candles =
     json.values
-      .map(v => ({
-        datetime: v.datetime,
 
-        open: num(v.open, NaN),
-        high: num(v.high, NaN),
-        low: num(v.low, NaN),
-        close: num(v.close, NaN),
+      .map(
+        v => ({
 
-        volume: num(v.volume, 0)
-      }))
-      .filter(c =>
-        Number.isFinite(c.open) &&
-        Number.isFinite(c.high) &&
-        Number.isFinite(c.low) &&
-        Number.isFinite(c.close)
+          datetime:
+            v.datetime,
+
+          open:
+            num(
+              v.open,
+              NaN
+            ),
+
+          high:
+            num(
+              v.high,
+              NaN
+            ),
+
+          low:
+            num(
+              v.low,
+              NaN
+            ),
+
+          close:
+            num(
+              v.close,
+              NaN
+            ),
+
+          volume:
+            num(
+              v.volume,
+              0
+            )
+
+        })
+      )
+
+      .filter(
+        c =>
+          Number.isFinite(
+            c.open
+          ) &&
+          Number.isFinite(
+            c.high
+          ) &&
+          Number.isFinite(
+            c.low
+          ) &&
+          Number.isFinite(
+            c.close
+          )
       );
 
-  if (candles.length < 30) {
+
+  if (
+    candles.length < 30
+  ) {
+
     throw new Error(
       "Not enough valid Twelve Data candles."
     );
+
   }
 
-  // IMPORTANT:
-  // Twelve Data is requested with order=DESC,
-  // so the newest candle comes first.
-  //
-  // All indicator calculations in this engine
-  // require chronological order:
-  // OLDEST -> NEWEST
+
+  // Twelve Data requested DESC.
+  // Indicators require OLDEST -> NEWEST.
   candles.reverse();
 
+
   return candles;
+
 }
 
 
+
 // ============================================================
-// RATE-LIMIT SAFE DATA LOADER
+// RATE LIMIT SAFE DATA LOADER
 // ============================================================
 
 async function getTimeSeries(
   env,
   interval
 ) {
+
   const key =
-    candleCacheKey(interval);
+    candleCacheKey(
+      interval
+    );
 
   const cache =
     memory.candles[key];
 
-  const now = Date.now();
+  const now =
+    Date.now();
 
   const ttl =
-    interval === CONFIG.INTERVAL_FAST
+    interval ===
+    CONFIG.INTERVAL_FAST
       ? CONFIG.FAST_CACHE_TTL_MS
       : CONFIG.SLOW_CACHE_TTL_MS;
 
@@ -399,9 +717,13 @@ async function getTimeSeries(
 
   if (
     cache.data &&
-    now - cache.fetchedAt < ttl
+    now -
+      cache.fetchedAt <
+      ttl
   ) {
+
     return cache.data;
+
   }
 
 
@@ -410,25 +732,35 @@ async function getTimeSeries(
   // ----------------------------------------------------------
 
   if (
-    now < memory.rateLimitUntil
+    now <
+    memory.rateLimitUntil
   ) {
+
     if (
       cache.data &&
-      now - cache.fetchedAt <=
+      now -
+        cache.fetchedAt <=
         CONFIG.STALE_MAX_MS
     ) {
+
       return cache.data;
+
     }
+
 
     const wait =
       Math.ceil(
-        (memory.rateLimitUntil - now) /
-        1000
+        (
+          memory.rateLimitUntil -
+          now
+        ) / 1000
       );
+
 
     throw new Error(
       `Twelve Data rate limit active. Retry in ${wait}s.`
     );
+
   }
 
 
@@ -436,8 +768,12 @@ async function getTimeSeries(
   // DUPLICATE REQUEST LOCK
   // ----------------------------------------------------------
 
-  if (memory.locks[key]) {
+  if (
+    memory.locks[key]
+  ) {
+
     return await memory.locks[key];
+
   }
 
 
@@ -450,12 +786,15 @@ async function getTimeSeries(
           Date.now();
 
 
-        // Another request may have filled cache
         if (
           cache.data &&
-          current - cache.fetchedAt < ttl
+          current -
+            cache.fetchedAt <
+            ttl
         ) {
+
           return cache.data;
+
         }
 
 
@@ -466,10 +805,14 @@ async function getTimeSeries(
           );
 
 
-        if (!apiKey) {
+        if (
+          !apiKey
+        ) {
+
           throw new Error(
             "TWELVE_DATA_API_KEY is missing."
           );
+
         }
 
 
@@ -493,7 +836,7 @@ async function getTimeSeries(
             url,
             {
               headers: {
-                "accept":
+                accept:
                   "application/json"
               }
             }
@@ -505,10 +848,12 @@ async function getTimeSeries(
             "api-credits-used"
           );
 
+
         const creditsLeft =
           response.headers.get(
             "api-credits-left"
           );
+
 
         const retryAfter =
           response.headers.get(
@@ -518,6 +863,7 @@ async function getTimeSeries(
 
         cache.creditsUsed =
           creditsUsed;
+
 
         cache.creditsLeft =
           creditsLeft;
@@ -538,14 +884,17 @@ async function getTimeSeries(
             );
 
 
-          if (retrySeconds < 1) {
+          if (
+            retrySeconds < 1
+          ) {
             retrySeconds = 65;
           }
 
 
           memory.rateLimitUntil =
             Date.now() +
-            retrySeconds * 1000;
+            retrySeconds *
+              1000;
 
 
           memory.rateLimitRetryAfter =
@@ -560,20 +909,22 @@ async function getTimeSeries(
             message;
 
 
-          // Use previous good data
           if (
             cache.data &&
             Date.now() -
               cache.fetchedAt <=
               CONFIG.STALE_MAX_MS
           ) {
+
             return cache.data;
+
           }
 
 
           throw new Error(
             message
           );
+
         }
 
 
@@ -583,13 +934,20 @@ async function getTimeSeries(
 
         let json;
 
+
         try {
+
           json =
-            JSON.parse(text);
+            JSON.parse(
+              text
+            );
+
         } catch {
+
           throw new Error(
             `Twelve Data invalid JSON (HTTP ${response.status}).`
           );
+
         }
 
 
@@ -597,7 +955,9 @@ async function getTimeSeries(
         // OTHER HTTP ERRORS
         // ----------------------------------------------------
 
-        if (!response.ok) {
+        if (
+          !response.ok
+        ) {
 
           const message =
             json?.message ||
@@ -615,13 +975,16 @@ async function getTimeSeries(
               cache.fetchedAt <=
               CONFIG.STALE_MAX_MS
           ) {
+
             return cache.data;
+
           }
 
 
           throw new Error(
             message
           );
+
         }
 
 
@@ -630,7 +993,8 @@ async function getTimeSeries(
         // ----------------------------------------------------
 
         if (
-          json?.status === "error"
+          json?.status ===
+          "error"
         ) {
 
           const message =
@@ -648,13 +1012,16 @@ async function getTimeSeries(
               cache.fetchedAt <=
               CONFIG.STALE_MAX_MS
           ) {
+
             return cache.data;
+
           }
 
 
           throw new Error(
             message
           );
+
         }
 
 
@@ -671,8 +1038,10 @@ async function getTimeSeries(
         cache.data =
           candles;
 
+
         cache.fetchedAt =
           Date.now();
+
 
         cache.lastError =
           null;
@@ -681,13 +1050,17 @@ async function getTimeSeries(
         memory.rateLimitUntil =
           0;
 
+
         memory.rateLimitRetryAfter =
           null;
 
 
         return candles;
 
-      } catch (error) {
+
+      } catch (
+        error
+      ) {
 
         cache.lastError =
           String(
@@ -696,33 +1069,35 @@ async function getTimeSeries(
           );
 
 
-        // ----------------------------------------------------
-        // STALE FALLBACK
-        // ----------------------------------------------------
-
         if (
           cache.data &&
           Date.now() -
             cache.fetchedAt <=
             CONFIG.STALE_MAX_MS
         ) {
+
           return cache.data;
+
         }
 
 
         throw error;
 
+
       } finally {
 
         memory.locks[key] =
           null;
+
       }
 
     })();
 
 
   return await memory.locks[key];
+
 }
+
 
 
 // ============================================================
@@ -743,19 +1118,25 @@ function getTwelveDataCacheStatus() {
     return {
 
       cached:
-        Boolean(cache.data),
+        Boolean(
+          cache.data
+        ),
 
       age_seconds:
         cache.data
+
           ? Math.max(
               0,
               Math.floor(
-                (now -
-                  cache.fetchedAt) /
-                1000
+                (
+                  now -
+                  cache.fetchedAt
+                ) / 1000
               )
             )
+
           : null,
+
 
       fresh:
         Boolean(
@@ -765,6 +1146,7 @@ function getTwelveDataCacheStatus() {
             ttl
         ),
 
+
       stale_usable:
         Boolean(
           cache.data &&
@@ -773,15 +1155,20 @@ function getTwelveDataCacheStatus() {
             CONFIG.STALE_MAX_MS
         ),
 
+
       api_credits_used:
         cache.creditsUsed,
+
 
       api_credits_left:
         cache.creditsLeft,
 
+
       last_error:
         cache.lastError
+
     };
+
   }
 
 
@@ -791,16 +1178,21 @@ function getTwelveDataCacheStatus() {
       now <
       memory.rateLimitUntil,
 
+
     rate_limit_seconds_left:
+
       now <
       memory.rateLimitUntil
+
         ? Math.ceil(
             (
               memory.rateLimitUntil -
               now
             ) / 1000
           )
+
         : 0,
+
 
     fast_15m:
       item(
@@ -808,13 +1200,17 @@ function getTwelveDataCacheStatus() {
         CONFIG.FAST_CACHE_TTL_MS
       ),
 
+
     slow_1h:
       item(
         memory.candles.slow,
         CONFIG.SLOW_CACHE_TTL_MS
       )
+
   };
+
 }
+
 
 
 // ============================================================
@@ -828,13 +1224,19 @@ function ema(
 
   if (
     !Array.isArray(values) ||
-    values.length < period
+    values.length <
+      period
   ) {
+
     return null;
+
   }
 
+
   const k =
-    2 / (period + 1);
+    2 /
+    (period + 1);
+
 
   let value =
     values[0];
@@ -847,14 +1249,21 @@ function ema(
   ) {
 
     value =
-      values[i] * k +
-      value * (1 - k);
+      values[i] *
+        k +
+      value *
+        (1 - k);
+
   }
 
 
   return value;
+
 }
 
+
+
+// ------------------------------------------------------------
 
 function emaSeries(
   values,
@@ -863,17 +1272,23 @@ function emaSeries(
 
   if (
     !Array.isArray(values) ||
-    values.length < period
+    values.length <
+      period
   ) {
+
     return [];
+
   }
 
 
   const k =
-    2 / (period + 1);
+    2 /
+    (period + 1);
+
 
   let value =
     values[0];
+
 
   const out =
     [value];
@@ -886,16 +1301,26 @@ function emaSeries(
   ) {
 
     value =
-      values[i] * k +
-      value * (1 - k);
+      values[i] *
+        k +
+      value *
+        (1 - k);
 
-    out.push(value);
+
+    out.push(
+      value
+    );
+
   }
 
 
   return out;
+
 }
 
+
+
+// ------------------------------------------------------------
 
 function rsi(
   values,
@@ -907,11 +1332,14 @@ function rsi(
     values.length <
       period + 1
   ) {
+
     return null;
+
   }
 
 
   let gains = 0;
+
   let losses = 0;
 
 
@@ -926,24 +1354,37 @@ function rsi(
       values[i - 1];
 
 
-    if (diff >= 0) {
+    if (
+      diff >= 0
+    ) {
+
       gains += diff;
+
     } else {
+
       losses -= diff;
+
     }
+
   }
 
 
   let avgGain =
-    gains / period;
+    gains /
+    period;
+
 
   let avgLoss =
-    losses / period;
+    losses /
+    period;
 
 
   for (
-    let i = period + 1;
+    let i =
+      period + 1;
+
     i < values.length;
+
     i++
   ) {
 
@@ -958,6 +1399,7 @@ function rsi(
         0
       );
 
+
     const loss =
       Math.max(
         -diff,
@@ -968,7 +1410,7 @@ function rsi(
     avgGain =
       (
         avgGain *
-        (period - 1) +
+          (period - 1) +
         gain
       ) / period;
 
@@ -976,14 +1418,19 @@ function rsi(
     avgLoss =
       (
         avgLoss *
-        (period - 1) +
+          (period - 1) +
         loss
       ) / period;
+
   }
 
 
-  if (avgLoss === 0) {
+  if (
+    avgLoss === 0
+  ) {
+
     return 100;
+
   }
 
 
@@ -997,8 +1444,12 @@ function rsi(
     100 /
       (1 + rs)
   );
+
 }
 
+
+
+// ------------------------------------------------------------
 
 function atr(
   candles,
@@ -1010,7 +1461,9 @@ function atr(
     candles.length <
       period + 1
   ) {
+
     return null;
+
   }
 
 
@@ -1026,13 +1479,16 @@ function atr(
     const c =
       candles[i];
 
+
     const prev =
       candles[i - 1];
 
 
     const tr =
       Math.max(
-        c.high - c.low,
+
+        c.high -
+          c.low,
 
         Math.abs(
           c.high -
@@ -1043,27 +1499,39 @@ function atr(
           c.low -
           prev.close
         )
+
       );
 
 
-    trs.push(tr);
+    trs.push(
+      tr
+    );
+
   }
 
 
   if (
-    trs.length < period
+    trs.length <
+      period
   ) {
+
     return null;
+
   }
 
 
   let value =
     trs
-      .slice(0, period)
+      .slice(
+        0,
+        period
+      )
       .reduce(
-        (a, b) => a + b,
+        (a, b) =>
+          a + b,
         0
-      ) / period;
+      ) /
+    period;
 
 
   for (
@@ -1077,13 +1545,19 @@ function atr(
         value *
           (period - 1) +
         trs[i]
-      ) / period;
+      ) /
+      period;
+
   }
 
 
   return value;
+
 }
 
+
+
+// ------------------------------------------------------------
 
 function macd(
   values,
@@ -1096,14 +1570,19 @@ function macd(
     !Array.isArray(values) ||
     values.length <
       slow +
-        signalPeriod
+      signalPeriod
   ) {
 
     return {
+
       line: null,
+
       signal: null,
+
       histogram: null
+
     };
+
   }
 
 
@@ -1112,6 +1591,7 @@ function macd(
       values,
       fast
     );
+
 
   const slowSeries =
     emaSeries(
@@ -1127,7 +1607,10 @@ function macd(
 
   const lines =
     slowSeries.map(
-      (v, i) =>
+      (
+        v,
+        i
+      ) =>
         fastSeries[
           i + offset
         ] - v
@@ -1153,13 +1636,61 @@ function macd(
     ];
 
 
+  const histogram =
+    line -
+    signal;
+
+
+  const previousLine =
+    lines.length >= 2
+
+      ? lines[
+          lines.length - 2
+        ]
+
+      : null;
+
+
+  const previousSignal =
+    signalSeries.length >= 2
+
+      ? signalSeries[
+          signalSeries.length - 2
+        ]
+
+      : null;
+
+
+  const previousHistogram =
+    previousLine !== null &&
+    previousSignal !== null
+
+      ? previousLine -
+        previousSignal
+
+      : null;
+
+
   return {
+
     line,
+
     signal,
-    histogram:
-      line - signal
+
+    histogram,
+
+    previousHistogram,
+
+    histogramSlope:
+      previousHistogram !== null
+        ? histogram -
+          previousHistogram
+        : null
+
   };
+
 }
+
 
 
 // ============================================================
@@ -1178,17 +1709,26 @@ function adxDetails(
   ) {
 
     return {
+
       adx: null,
+
       plusDI: null,
+
       minusDI: null,
+
       spread: null,
+
       previousAdx: null
+
     };
+
   }
 
 
   const trs = [];
+
   const plusDM = [];
+
   const minusDM = [];
 
 
@@ -1200,6 +1740,7 @@ function adxDetails(
 
     const c =
       candles[i];
+
 
     const p =
       candles[i - 1];
@@ -1216,26 +1757,37 @@ function adxDetails(
 
 
     plusDM.push(
+
       upMove >
         downMove &&
       upMove > 0
+
         ? upMove
+
         : 0
+
     );
 
 
     minusDM.push(
+
       downMove >
         upMove &&
       downMove > 0
+
         ? downMove
+
         : 0
+
     );
 
 
     trs.push(
+
       Math.max(
-        c.high - c.low,
+
+        c.high -
+          c.low,
 
         Math.abs(
           c.high -
@@ -1246,8 +1798,11 @@ function adxDetails(
           c.low -
           p.close
         )
+
       )
+
     );
+
   }
 
 
@@ -1257,43 +1812,63 @@ function adxDetails(
   ) {
 
     return {
+
       adx: null,
+
       plusDI: null,
+
       minusDI: null,
+
       spread: null,
+
       previousAdx: null
+
     };
+
   }
 
 
   let tr =
     trs
-      .slice(0, period)
+      .slice(
+        0,
+        period
+      )
       .reduce(
-        (a, b) => a + b,
+        (a, b) =>
+          a + b,
         0
       );
 
 
   let pdm =
     plusDM
-      .slice(0, period)
+      .slice(
+        0,
+        period
+      )
       .reduce(
-        (a, b) => a + b,
+        (a, b) =>
+          a + b,
         0
       );
 
 
   let mdm =
     minusDM
-      .slice(0, period)
+      .slice(
+        0,
+        period
+      )
       .reduce(
-        (a, b) => a + b,
+        (a, b) =>
+          a + b,
         0
       );
 
 
   const dx = [];
+
   const diPoints = [];
 
 
@@ -1323,39 +1898,59 @@ function adxDetails(
 
     const plus =
       tr === 0
+
         ? 0
+
         : 100 *
-          (pdm / tr);
+          (
+            pdm /
+            tr
+          );
 
 
     const minus =
       tr === 0
+
         ? 0
+
         : 100 *
-          (mdm / tr);
+          (
+            mdm /
+            tr
+          );
 
 
     const sum =
-      plus + minus;
+      plus +
+      minus;
 
 
     const d =
       sum === 0
+
         ? 0
+
         : 100 *
           Math.abs(
-            plus - minus
+            plus -
+            minus
           ) /
           sum;
 
 
-    dx.push(d);
+    dx.push(
+      d
+    );
 
 
     diPoints.push({
+
       plus,
+
       minus
+
     });
+
   }
 
 
@@ -1365,22 +1960,34 @@ function adxDetails(
   ) {
 
     return {
+
       adx: null,
+
       plusDI: null,
+
       minusDI: null,
+
       spread: null,
+
       previousAdx: null
+
     };
+
   }
 
 
   let adxValue =
     dx
-      .slice(0, period)
+      .slice(
+        0,
+        period
+      )
       .reduce(
-        (a, b) => a + b,
+        (a, b) =>
+          a + b,
         0
-      ) / period;
+      ) /
+    period;
 
 
   let previousAdx =
@@ -1402,7 +2009,9 @@ function adxDetails(
         adxValue *
           (period - 1) +
         dx[i]
-      ) / period;
+      ) /
+      period;
+
   }
 
 
@@ -1430,8 +2039,11 @@ function adxDetails(
       ),
 
     previousAdx
+
   };
+
 }
+
 
 
 // ============================================================
@@ -1445,9 +2057,12 @@ function momentum(
 
   if (
     !Array.isArray(values) ||
-    values.length <= lookback
+    values.length <=
+      lookback
   ) {
+
     return null;
+
   }
 
 
@@ -1460,21 +2075,30 @@ function momentum(
   const old =
     values[
       values.length -
-        1 -
-        lookback
+      1 -
+      lookback
     ];
 
 
-  if (!old) {
+  if (
+    !old
+  ) {
+
     return null;
+
   }
 
 
   return (
-    (current - old) /
+    (
+      current -
+      old
+    ) /
     old
   );
+
 }
+
 
 
 // ============================================================
@@ -1492,13 +2116,24 @@ function analyzeTrend(
 
 
   const e20 =
-    ema(closes, 20);
+    ema(
+      closes,
+      20
+    );
+
 
   const e50 =
-    ema(closes, 50);
+    ema(
+      closes,
+      50
+    );
+
 
   const e100 =
-    ema(closes, 100);
+    ema(
+      closes,
+      100
+    );
 
 
   const price =
@@ -1511,34 +2146,57 @@ function analyzeTrend(
     "NEUTRAL";
 
 
-  if (e20 && e50) {
+  if (
+    e20 !== null &&
+    e50 !== null
+  ) {
 
     if (
-      price > e20 &&
-      e20 > e50
+      price >
+        e20 &&
+      e20 >
+        e50
     ) {
+
       trend =
         "BULLISH";
+
     }
 
     else if (
-      price < e20 &&
-      e20 < e50
+      price <
+        e20 &&
+      e20 <
+        e50
     ) {
+
       trend =
         "BEARISH";
+
     }
+
   }
 
 
   return {
+
     trend,
+
     price,
-    ema20: e20,
-    ema50: e50,
-    ema100: e100
+
+    ema20:
+      e20,
+
+    ema50:
+      e50,
+
+    ema100:
+      e100
+
   };
+
 }
+
 
 
 // ============================================================
@@ -1554,7 +2212,9 @@ function structureSignal(
     candles.length <
       lookback + 3
   ) {
+
     return "NEUTRAL";
+
   }
 
 
@@ -1569,6 +2229,16 @@ function structureSignal(
       -lookback * 2,
       -lookback
     );
+
+
+  if (
+    recent.length === 0 ||
+    previous.length === 0
+  ) {
+
+    return "NEUTRAL";
+
+  }
 
 
   const recentHigh =
@@ -1609,7 +2279,9 @@ function structureSignal(
     recentLow >=
       previousLow
   ) {
+
     return "BULLISH";
+
   }
 
 
@@ -1619,12 +2291,16 @@ function structureSignal(
     recentHigh <=
       previousHigh
   ) {
+
     return "BEARISH";
+
   }
 
 
   return "NEUTRAL";
+
 }
+
 
 
 // ============================================================
@@ -1640,10 +2316,15 @@ function candleQuality(
   ) {
 
     return {
+
       bullish: false,
+
       bearish: false,
+
       bodyRatio: 0
+
     };
+
   }
 
 
@@ -1654,16 +2335,24 @@ function candleQuality(
 
 
   const range =
-    c.high - c.low;
+    c.high -
+    c.low;
 
 
-  if (range <= 0) {
+  if (
+    range <= 0
+  ) {
 
     return {
+
       bullish: false,
+
       bearish: false,
+
       bodyRatio: 0
+
     };
+
   }
 
 
@@ -1675,7 +2364,8 @@ function candleQuality(
 
 
   const bodyRatio =
-    body / range;
+    body /
+    range;
 
 
   return {
@@ -1689,8 +2379,11 @@ function candleQuality(
       c.open,
 
     bodyRatio
+
   };
+
 }
+
 
 
 // ============================================================
@@ -1748,7 +2441,9 @@ function analyzeTimeframe(
 
 
   const macdValue =
-    macd(closes);
+    macd(
+      closes
+    );
 
 
   const mom =
@@ -1767,8 +2462,10 @@ function analyzeTimeframe(
   const rsiSlope =
     rsiPrevious !== null &&
     rsiValue !== null
+
       ? rsiValue -
         rsiPrevious
+
       : 0;
 
 
@@ -1792,52 +2489,75 @@ function analyzeTimeframe(
       trendData.ema100,
 
     ema20DistanceAtr:
-      atrValue
+
+      atrValue !== null &&
+      trendData.ema20 !== null
+
         ? Math.abs(
             trendData.price -
             trendData.ema20
-          ) / atrValue
+          ) /
+          atrValue
+
         : null,
+
 
     rsi:
       rsiValue,
 
+
     rsiSlope,
+
 
     atr:
       atrValue,
 
+
     adx:
       adx.adx,
+
 
     previousAdx:
       adx.previousAdx,
 
+
     adxSlope:
+
       adx.adx !== null &&
       adx.previousAdx !== null
+
         ? adx.adx -
           adx.previousAdx
+
         : null,
+
 
     plusDI:
       adx.plusDI,
 
+
     minusDI:
       adx.minusDI,
+
 
     diSpread:
       adx.spread,
 
+
     macd:
       macdValue,
+
 
     momentum:
       mom,
 
+
     candle
+
   };
+
 }
+
 
 
 // ============================================================
@@ -1858,7 +2578,9 @@ function normalizeNewsCurrency(
     s === "USD" ||
     s === "US"
   ) {
+
     return "USD";
+
   }
 
 
@@ -1866,13 +2588,19 @@ function normalizeNewsCurrency(
     s === "XAU" ||
     s === "GOLD"
   ) {
+
     return "USD";
+
   }
 
 
   return s;
+
 }
 
+
+
+// ------------------------------------------------------------
 
 function normalizeNewsImpact(
   value
@@ -1889,7 +2617,9 @@ function normalizeNewsImpact(
     s.includes("red") ||
     s === "3"
   ) {
+
     return "HIGH";
+
   }
 
 
@@ -1898,7 +2628,9 @@ function normalizeNewsImpact(
     s.includes("orange") ||
     s === "2"
   ) {
+
     return "MEDIUM";
+
   }
 
 
@@ -1907,38 +2639,55 @@ function normalizeNewsImpact(
     s.includes("yellow") ||
     s === "1"
   ) {
+
     return "LOW";
+
   }
 
 
   return "UNKNOWN";
+
 }
 
+
+
+// ------------------------------------------------------------
 
 function parseNewsTimestamp(
   event
 ) {
 
   const candidates = [
+
     event?.timestamp,
+
     event?.date,
+
     event?.datetime,
+
     event?.time,
+
     event?.event_timestamp
+
   ];
 
 
   for (
-    const value of candidates
+    const value of
+    candidates
   ) {
 
-    if (!value) {
+    if (
+      !value
+    ) {
       continue;
     }
 
 
     const n =
-      Number(value);
+      Number(
+        value
+      );
 
 
     if (
@@ -1947,85 +2696,124 @@ function parseNewsTimestamp(
 
       return n <
         10_000_000_000
+
         ? n * 1000
+
         : n;
+
     }
 
 
     const parsed =
       Date.parse(
-        String(value)
+        String(
+          value
+        )
       );
 
 
     if (
       Number.isFinite(parsed)
     ) {
+
       return parsed;
+
     }
+
   }
 
 
   return null;
+
 }
 
+
+
+// ------------------------------------------------------------
 
 function normalizeNewsEvents(
   raw
 ) {
 
   const source =
+
     Array.isArray(raw)
+
       ? raw
+
       : Array.isArray(
           raw?.events
         )
+
         ? raw.events
+
         : Array.isArray(
             raw?.data
           )
+
           ? raw.data
+
           : [];
 
 
   return source
 
-    .map(event => ({
+    .map(
+      event => ({
 
-      title:
-        event?.title ||
-        event?.event ||
-        event?.name ||
-        "Economic event",
+        title:
 
-      currency:
-        normalizeNewsCurrency(
-          event?.currency ||
-          event?.country ||
-          event?.ccy
-        ),
+          event?.title ||
+          event?.event ||
+          event?.name ||
+          "Economic event",
 
-      impact:
-        normalizeNewsImpact(
-          event?.impact ||
-          event?.importance ||
-          event?.impact_name
-        ),
 
-      timestamp:
-        parseNewsTimestamp(
+        currency:
+
+          normalizeNewsCurrency(
+
+            event?.currency ||
+            event?.country ||
+            event?.ccy
+
+          ),
+
+
+        impact:
+
+          normalizeNewsImpact(
+
+            event?.impact ||
+            event?.importance ||
+            event?.impact_name
+
+          ),
+
+
+        timestamp:
+
+          parseNewsTimestamp(
+            event
+          ),
+
+
+        raw:
           event
-        ),
 
-      raw:
-        event
-    }))
+      })
+    )
 
     .filter(
-      e => e.timestamp
+      e =>
+        e.timestamp
     );
+
 }
 
+
+
+// ------------------------------------------------------------
 
 async function getLiveNews(
   env
@@ -2040,9 +2828,11 @@ async function getLiveNews(
     now -
       memory.news.fetchedAt <
       CONFIG.NEWS_CACHE_SECONDS *
-        1000
+      1000
   ) {
+
     return memory.news.data;
+
   }
 
 
@@ -2055,20 +2845,24 @@ async function getLiveNews(
 
         {
           headers: {
-            "accept":
+            accept:
               "application/json"
           }
         },
 
         10_000
+
       );
 
 
-    if (!response.ok) {
+    if (
+      !response.ok
+    ) {
 
       throw new Error(
         `News HTTP ${response.status}`
       );
+
     }
 
 
@@ -2085,8 +2879,10 @@ async function getLiveNews(
     memory.news.data =
       events;
 
+
     memory.news.fetchedAt =
       Date.now();
+
 
     memory.news.lastError =
       null;
@@ -2094,7 +2890,10 @@ async function getLiveNews(
 
     return events;
 
-  } catch (error) {
+
+  } catch (
+    error
+  ) {
 
     memory.news.lastError =
       String(
@@ -2107,9 +2906,16 @@ async function getLiveNews(
       memory.news.data ||
       []
     );
+
   }
+
 }
 
+
+
+// ============================================================
+// RELEVANT NEWS
+// ============================================================
 
 function relevantNews(
   events
@@ -2148,23 +2954,35 @@ function relevantNews(
 
 
         return (
+
           diffMinutes <=
             CONFIG.NEWS_LOOKAHEAD_HOURS *
               60 &&
 
           diffMinutes >=
             -CONFIG.NEWS_AFTER_MINUTES
+
         );
+
       }
     )
 
     .sort(
-      (a, b) =>
+      (
+        a,
+        b
+      ) =>
         a.timestamp -
         b.timestamp
     );
+
 }
 
+
+
+// ============================================================
+// NEWS STATE
+// ============================================================
 
 function newsState(
   events
@@ -2192,12 +3010,15 @@ function newsState(
 
 
         return (
+
           diff <=
             CONFIG.NEWS_BEFORE_MINUTES &&
 
           diff >=
             -CONFIG.NEWS_AFTER_MINUTES
+
         );
+
       }
     );
 
@@ -2205,10 +3026,13 @@ function newsState(
   return {
 
     blocked:
-      Boolean(blocked),
+      Boolean(
+        blocked
+      ),
 
     blockedEvent:
-      blocked || null,
+      blocked ||
+      null,
 
     upcoming:
       relevant[0] ||
@@ -2216,12 +3040,15 @@ function newsState(
 
     events:
       relevant
+
   };
+
 }
 
 
+
 // ============================================================
-// SCORE
+// SCORE BREAKDOWN
 // ============================================================
 
 function calculateScore(
@@ -2230,290 +3057,491 @@ function calculateScore(
   direction
 ) {
 
+  const breakdown = [];
+
   let score = 0;
 
 
-  if (
+  function add(
+    name,
+    points,
+    passed,
+    detail
+  ) {
+
+    const p =
+      passed
+        ? points
+        : 0;
+
+
+    score += p;
+
+
+    breakdown.push({
+
+      name,
+
+      max:
+        points,
+
+      score:
+        p,
+
+      passed:
+        Boolean(
+          passed
+        ),
+
+      detail:
+        detail || ""
+
+    });
+
+  }
+
+
+
+  // ----------------------------------------------------------
+  // TREND — 24 points
+  // ----------------------------------------------------------
+
+  add(
+
+    "15M Trend",
+
+    12,
+
     direction === "BUY"
-  ) {
+      ? fast.trend ===
+        "BULLISH"
+      : fast.trend ===
+        "BEARISH",
 
-    if (
-      fast.trend ===
-      "BULLISH"
-    ) {
-      score += 15;
-    }
+    fast.trend
 
-
-    if (
-      slow.trend ===
-      "BULLISH"
-    ) {
-      score += 15;
-    }
+  );
 
 
-    if (
-      fast.structure ===
-      "BULLISH"
-    ) {
-      score += 10;
-    }
+  add(
+
+    "1H Trend",
+
+    12,
+
+    direction === "BUY"
+      ? slow.trend ===
+        "BULLISH"
+      : slow.trend ===
+        "BEARISH",
+
+    slow.trend
+
+  );
 
 
-    if (
-      slow.structure ===
-      "BULLISH"
-    ) {
-      score += 8;
-    }
+
+  // ----------------------------------------------------------
+  // STRUCTURE — 16 points
+  // ----------------------------------------------------------
+
+  add(
+
+    "15M Structure",
+
+    8,
+
+    direction === "BUY"
+      ? fast.structure ===
+        "BULLISH"
+      : fast.structure ===
+        "BEARISH",
+
+    fast.structure
+
+  );
 
 
-    if (
-      fast.plusDI >
-      fast.minusDI
-    ) {
-      score += 8;
-    }
+  add(
+
+    "1H Structure",
+
+    8,
+
+    direction === "BUY"
+      ? slow.structure ===
+        "BULLISH"
+      : slow.structure ===
+        "BEARISH",
+
+    slow.structure
+
+  );
 
 
-    if (
-      slow.plusDI >
-      slow.minusDI
-    ) {
-      score += 5;
-    }
+
+  // ----------------------------------------------------------
+  // DI — 14 points
+  // ----------------------------------------------------------
+
+  const fastDI =
+    direction === "BUY"
+
+      ? fast.plusDI >
+        fast.minusDI
+
+      : fast.minusDI >
+        fast.plusDI;
 
 
-    if (
-      fast.macd.histogram >
-      0
-    ) {
-      score += 8;
-    }
+  const slowDI =
+    direction === "BUY"
+
+      ? slow.plusDI >
+        slow.minusDI
+
+      : slow.minusDI >
+        slow.plusDI;
 
 
-    if (
-      slow.macd.histogram >
-      0
-    ) {
-      score += 5;
-    }
+  add(
+
+    "15M DI",
+
+    7,
+
+    fastDI &&
+      fast.diSpread !== null &&
+      fast.diSpread >=
+        CONFIG.MIN_DI_SPREAD,
+
+    `spread=${safeValue(
+      round(
+        fast.diSpread,
+        2
+      )
+    )}`
+
+  );
 
 
-    if (
-      fast.rsi >=
-        CONFIG.RSI_BULL_MIN &&
-      fast.rsi <=
-        CONFIG.RSI_BULL_MAX
-    ) {
-      score += 8;
-    }
+  add(
+
+    "1H DI",
+
+    7,
+
+    slowDI &&
+      slow.diSpread !== null &&
+      slow.diSpread >=
+        CONFIG.MIN_SLOW_DI_SPREAD,
+
+    `spread=${safeValue(
+      round(
+        slow.diSpread,
+        2
+      )
+    )}`
+
+  );
 
 
-    if (
-      fast.rsiSlope >
-      0
-    ) {
-      score += 4;
-    }
+
+  // ----------------------------------------------------------
+  // MACD — 12 points
+  // ----------------------------------------------------------
+
+  add(
+
+    "15M MACD",
+
+    6,
+
+    direction === "BUY"
+
+      ? fast.macd.histogram >
+        0
+
+      : fast.macd.histogram <
+        0,
+
+    `hist=${safeValue(
+      round(
+        fast.macd.histogram,
+        3
+      )
+    )}`
+
+  );
 
 
-    if (
-      fast.momentum >=
-      CONFIG.MIN_MOMENTUM
-    ) {
-      score += 8;
-    }
+  add(
+
+    "1H MACD",
+
+    6,
+
+    direction === "BUY"
+
+      ? slow.macd.histogram >
+        0
+
+      : slow.macd.histogram <
+        0,
+
+    `hist=${safeValue(
+      round(
+        slow.macd.histogram,
+        3
+      )
+    )}`
+
+  );
 
 
-    if (
-      fast.candle.bullish &&
-      fast.candle.bodyRatio >=
-        0.35
-    ) {
-      score += 8;
-    }
+
+  // ----------------------------------------------------------
+  // RSI — 8 points
+  // ----------------------------------------------------------
+
+  const rsiOK =
+    direction === "BUY"
+
+      ? fast.rsi >=
+          CONFIG.RSI_BULL_MIN &&
+        fast.rsi <=
+          CONFIG.RSI_BULL_MAX
+
+      : fast.rsi >=
+          CONFIG.RSI_BEAR_MIN &&
+        fast.rsi <=
+          CONFIG.RSI_BEAR_MAX;
 
 
-    if (
-      fast.adx >= 25
-    ) {
-      score += 8;
+  add(
 
-    } else if (
-      fast.adx >= 23
-    ) {
-      score += 5;
-    }
-  }
+    "15M RSI",
 
+    8,
 
-  if (
-    direction === "SELL"
-  ) {
+    rsiOK,
 
-    if (
-      fast.trend ===
-      "BEARISH"
-    ) {
-      score += 15;
-    }
+    `rsi=${safeValue(
+      round(
+        fast.rsi,
+        2
+      )
+    )}`
+
+  );
 
 
-    if (
-      slow.trend ===
-      "BEARISH"
-    ) {
-      score += 15;
-    }
+
+  // ----------------------------------------------------------
+  // RSI SLOPE — 4 points
+  // ----------------------------------------------------------
+
+  const rsiSlopeOK =
+    direction === "BUY"
+
+      ? fast.rsiSlope > 0
+
+      : fast.rsiSlope < 0;
 
 
-    if (
-      fast.structure ===
-      "BEARISH"
-    ) {
-      score += 10;
-    }
+  add(
+
+    "RSI Slope",
+
+    4,
+
+    rsiSlopeOK,
+
+    `slope=${safeValue(
+      round(
+        fast.rsiSlope,
+        2
+      )
+    )}`
+
+  );
 
 
-    if (
-      slow.structure ===
-      "BEARISH"
-    ) {
-      score += 8;
-    }
+
+  // ----------------------------------------------------------
+  // MOMENTUM — 8 points
+  // ----------------------------------------------------------
+
+  const momentumOK =
+    direction === "BUY"
+
+      ? fast.momentum !== null &&
+        fast.momentum >=
+          CONFIG.MIN_MOMENTUM
+
+      : fast.momentum !== null &&
+        fast.momentum <=
+          -CONFIG.MIN_MOMENTUM;
 
 
-    if (
-      fast.minusDI >
-      fast.plusDI
-    ) {
-      score += 8;
-    }
+  add(
+
+    "15M Momentum",
+
+    8,
+
+    momentumOK,
+
+    `momentum=${safeValue(
+      round(
+        fast.momentum,
+        4
+      )
+    )}`
+
+  );
 
 
-    if (
-      slow.minusDI >
-      slow.plusDI
-    ) {
-      score += 5;
-    }
+
+  // ----------------------------------------------------------
+  // CANDLE — 6 points
+  // ----------------------------------------------------------
+
+  const candleOK =
+    direction === "BUY"
+
+      ? fast.candle.bullish &&
+        fast.candle.bodyRatio >=
+          0.35
+
+      : fast.candle.bearish &&
+        fast.candle.bodyRatio >=
+          0.35;
 
 
-    if (
-      fast.macd.histogram <
-      0
-    ) {
-      score += 8;
-    }
+  add(
+
+    "15M Candle",
+
+    6,
+
+    candleOK,
+
+    `body=${safeValue(
+      round(
+        fast.candle.bodyRatio,
+        2
+      )
+    )}`
+
+  );
 
 
-    if (
-      slow.macd.histogram <
-      0
-    ) {
-      score += 5;
-    }
 
+  // ----------------------------------------------------------
+  // ADX STRENGTH — 5 points
+  // ----------------------------------------------------------
 
-    if (
-      fast.rsi >=
-        CONFIG.RSI_BEAR_MIN &&
-      fast.rsi <=
-        CONFIG.RSI_BEAR_MAX
-    ) {
-      score += 8;
-    }
+  let adxPoints = 0;
 
-
-    if (
-      fast.rsiSlope <
-      0
-    ) {
-      score += 4;
-    }
-
-
-    if (
-      fast.momentum <=
-      -CONFIG.MIN_MOMENTUM
-    ) {
-      score += 8;
-    }
-
-
-    if (
-      fast.candle.bearish &&
-      fast.candle.bodyRatio >=
-        0.35
-    ) {
-      score += 8;
-    }
-
-
-    if (
-      fast.adx >= 25
-    ) {
-      score += 8;
-
-    } else if (
-      fast.adx >= 23
-    ) {
-      score += 5;
-    }
-  }
-
-
-  // ------------------------------------------
-  // LOW ADX SCORE CAP
-  // ------------------------------------------
 
   if (
     fast.adx !== null
   ) {
 
     if (
-      fast.adx < 18
+      fast.adx >= 25
     ) {
 
-      score =
-        Math.min(
-          score,
-          59
-        );
+      adxPoints = 5;
 
-    } else if (
-      fast.adx < 23
-    ) {
-
-      score =
-        Math.min(
-          score,
-          74
-        );
-
-    } else if (
-      fast.adx < 25
-    ) {
-
-      score =
-        Math.min(
-          score,
-          84
-        );
     }
+
+    else if (
+      fast.adx >= 23
+    ) {
+
+      adxPoints = 3;
+
+    }
+
   }
 
 
-  return Math.max(
-    0,
-    Math.min(
-      100,
-      Math.round(score)
-    )
+  score +=
+    adxPoints;
+
+
+  breakdown.push({
+
+    name:
+      "15M ADX",
+
+    max:
+      5,
+
+    score:
+      adxPoints,
+
+    passed:
+      adxPoints > 0,
+
+    detail:
+      `adx=${safeValue(
+        round(
+          fast.adx,
+          2
+        )
+      )}`
+
+  });
+
+
+
+  // ----------------------------------------------------------
+  // ADX SLOPE — 3 points
+  // ----------------------------------------------------------
+
+  add(
+
+    "15M ADX Slope",
+
+    3,
+
+    fast.adxSlope !== null &&
+      fast.adxSlope >=
+        CONFIG.MIN_ADX_SLOPE,
+
+    `slope=${safeValue(
+      round(
+        fast.adxSlope,
+        2
+      )
+    )}`
+
   );
+
+
+
+  return {
+
+    score:
+      Math.max(
+        0,
+        Math.min(
+          100,
+          Math.round(
+            score
+          )
+        )
+      ),
+
+    breakdown
+
+  };
+
 }
+
 
 
 // ============================================================
@@ -2527,6 +3555,7 @@ function inSession(
   const day =
     date.getUTCDay();
 
+
   const hour =
     date.getUTCHours();
 
@@ -2535,17 +3564,83 @@ function inSession(
     day === 0 ||
     day === 6
   ) {
+
     return false;
+
   }
 
 
   return (
+
     hour >=
       CONFIG.SESSION_START_UTC &&
+
     hour <
       CONFIG.SESSION_END_UTC
+
   );
+
 }
+
+
+
+// ============================================================
+// DATA FRESHNESS
+// ============================================================
+
+function signalDataFresh() {
+
+  const now =
+    Date.now();
+
+
+  const fast =
+    memory.candles.fast;
+
+
+  const slow =
+    memory.candles.slow;
+
+
+  const fastAge =
+    fast.data
+      ? now -
+        fast.fetchedAt
+      : Infinity;
+
+
+  const slowAge =
+    slow.data
+      ? now -
+        slow.fetchedAt
+      : Infinity;
+
+
+  return {
+
+    ok:
+
+      Boolean(
+        fast.data &&
+        slow.data &&
+        fastAge <=
+          CONFIG.MAX_SIGNAL_FAST_AGE_MS &&
+        slowAge <=
+          CONFIG.MAX_SIGNAL_SLOW_AGE_MS
+      ),
+
+
+    fastAgeMs:
+      fastAge,
+
+
+    slowAgeMs:
+      slowAge
+
+  };
+
+}
+
 
 
 // ============================================================
@@ -2564,25 +3659,36 @@ function directionCheck(
   ) {
 
     return {
+
       ok: false,
+
       reasons: [
         "Missing timeframe data"
       ]
+
     };
+
   }
 
 
   const reasons = [];
 
 
+
+  // ----------------------------------------------------------
+  // COMMON
+  // ----------------------------------------------------------
+
   if (
     fast.adx === null ||
     fast.adx <
       CONFIG.MIN_ADX
   ) {
+
     reasons.push(
       "15M ADX below minimum"
     );
+
   }
 
 
@@ -2591,9 +3697,11 @@ function directionCheck(
     fast.adxSlope <
       CONFIG.MIN_ADX_SLOPE
   ) {
+
     reasons.push(
       "15M ADX slope below minimum"
     );
+
   }
 
 
@@ -2602,9 +3710,11 @@ function directionCheck(
     slow.adx <
       CONFIG.MIN_SLOW_ADX
   ) {
+
     reasons.push(
       "1H ADX below minimum"
     );
+
   }
 
 
@@ -2613,9 +3723,24 @@ function directionCheck(
     fast.diSpread <
       CONFIG.MIN_DI_SPREAD
   ) {
+
     reasons.push(
       "15M DI spread below minimum"
     );
+
+  }
+
+
+  if (
+    slow.diSpread === null ||
+    slow.diSpread <
+      CONFIG.MIN_SLOW_DI_SPREAD
+  ) {
+
+    reasons.push(
+      "1H DI spread below minimum"
+    );
+
   }
 
 
@@ -2628,8 +3753,14 @@ function directionCheck(
     reasons.push(
       "Price too far from EMA20"
     );
+
   }
 
+
+
+  // ----------------------------------------------------------
+  // BUY
+  // ----------------------------------------------------------
 
   if (
     direction === "BUY"
@@ -2639,9 +3770,11 @@ function directionCheck(
       fast.trend !==
       "BULLISH"
     ) {
+
       reasons.push(
         "15M trend not bullish"
       );
+
     }
 
 
@@ -2649,9 +3782,11 @@ function directionCheck(
       slow.trend !==
       "BULLISH"
     ) {
+
       reasons.push(
         "1H trend not bullish"
       );
+
     }
 
 
@@ -2659,9 +3794,11 @@ function directionCheck(
       fast.structure !==
       "BULLISH"
     ) {
+
       reasons.push(
         "15M structure not bullish"
       );
+
     }
 
 
@@ -2669,9 +3806,11 @@ function directionCheck(
       slow.structure !==
       "BULLISH"
     ) {
+
       reasons.push(
         "1H structure not bullish"
       );
+
     }
 
 
@@ -2681,9 +3820,11 @@ function directionCheck(
         fast.minusDI
       )
     ) {
+
       reasons.push(
         "15M DI not bullish"
       );
+
     }
 
 
@@ -2693,9 +3834,11 @@ function directionCheck(
         slow.minusDI
       )
     ) {
+
       reasons.push(
         "1H DI not bullish"
       );
+
     }
 
 
@@ -2705,9 +3848,11 @@ function directionCheck(
         0
       )
     ) {
+
       reasons.push(
         "15M MACD not bullish"
       );
+
     }
 
 
@@ -2717,9 +3862,11 @@ function directionCheck(
         0
       )
     ) {
+
       reasons.push(
         "1H MACD not bullish"
       );
+
     }
 
 
@@ -2730,9 +3877,11 @@ function directionCheck(
       fast.rsi >
         CONFIG.RSI_BULL_MAX
     ) {
+
       reasons.push(
         "15M RSI outside bullish zone"
       );
+
     }
 
 
@@ -2742,9 +3891,11 @@ function directionCheck(
         0
       )
     ) {
+
       reasons.push(
         "RSI slope not bullish"
       );
+
     }
 
 
@@ -2753,9 +3904,11 @@ function directionCheck(
       fast.momentum <
         CONFIG.MIN_MOMENTUM
     ) {
+
       reasons.push(
         "Momentum below minimum"
       );
+
     }
 
 
@@ -2764,12 +3917,20 @@ function directionCheck(
       fast.candle.bodyRatio <
         0.35
     ) {
+
       reasons.push(
         "Last 15M candle not strong bullish"
       );
+
     }
+
   }
 
+
+
+  // ----------------------------------------------------------
+  // SELL
+  // ----------------------------------------------------------
 
   if (
     direction === "SELL"
@@ -2779,9 +3940,11 @@ function directionCheck(
       fast.trend !==
       "BEARISH"
     ) {
+
       reasons.push(
         "15M trend not bearish"
       );
+
     }
 
 
@@ -2789,9 +3952,11 @@ function directionCheck(
       slow.trend !==
       "BEARISH"
     ) {
+
       reasons.push(
         "1H trend not bearish"
       );
+
     }
 
 
@@ -2799,9 +3964,11 @@ function directionCheck(
       fast.structure !==
       "BEARISH"
     ) {
+
       reasons.push(
         "15M structure not bearish"
       );
+
     }
 
 
@@ -2809,9 +3976,11 @@ function directionCheck(
       slow.structure !==
       "BEARISH"
     ) {
+
       reasons.push(
         "1H structure not bearish"
       );
+
     }
 
 
@@ -2821,9 +3990,11 @@ function directionCheck(
         fast.plusDI
       )
     ) {
+
       reasons.push(
         "15M DI not bearish"
       );
+
     }
 
 
@@ -2833,9 +4004,11 @@ function directionCheck(
         slow.plusDI
       )
     ) {
+
       reasons.push(
         "1H DI not bearish"
       );
+
     }
 
 
@@ -2845,9 +4018,11 @@ function directionCheck(
         0
       )
     ) {
+
       reasons.push(
         "15M MACD not bearish"
       );
+
     }
 
 
@@ -2857,9 +4032,11 @@ function directionCheck(
         0
       )
     ) {
+
       reasons.push(
         "1H MACD not bearish"
       );
+
     }
 
 
@@ -2870,9 +4047,11 @@ function directionCheck(
       fast.rsi >
         CONFIG.RSI_BEAR_MAX
     ) {
+
       reasons.push(
         "15M RSI outside bearish zone"
       );
+
     }
 
 
@@ -2882,9 +4061,11 @@ function directionCheck(
         0
       )
     ) {
+
       reasons.push(
         "RSI slope not bearish"
       );
+
     }
 
 
@@ -2893,9 +4074,11 @@ function directionCheck(
       fast.momentum >
         -CONFIG.MIN_MOMENTUM
     ) {
+
       reasons.push(
         "Momentum below minimum"
       );
+
     }
 
 
@@ -2904,24 +4087,32 @@ function directionCheck(
       fast.candle.bodyRatio <
         0.35
     ) {
+
       reasons.push(
         "Last 15M candle not strong bearish"
       );
+
     }
+
   }
 
 
+
   return {
+
     ok:
       reasons.length === 0,
 
     reasons
+
   };
+
 }
 
 
+
 // ============================================================
-// TRADE PLAN
+// RECENT LEVELS
 // ============================================================
 
 function recentLevels(
@@ -2944,15 +4135,23 @@ function recentLevels(
         )
       ),
 
+
     resistance:
       Math.max(
         ...recent.map(
           c => c.high
         )
       )
+
   };
+
 }
 
+
+
+// ============================================================
+// TRADE PLAN
+// ============================================================
 
 function buildTradePlan(
   candles,
@@ -2963,6 +4162,7 @@ function buildTradePlan(
   const price =
     fast.price;
 
+
   const atrValue =
     fast.atr;
 
@@ -2972,47 +4172,97 @@ function buildTradePlan(
     !Number.isFinite(atrValue) ||
     atrValue <= 0
   ) {
+
     return null;
+
   }
 
 
   const levels =
     recentLevels(
-      candles
+      candles,
+      24
     );
 
 
+  if (
+    !Number.isFinite(
+      levels.support
+    ) ||
+    !Number.isFinite(
+      levels.resistance
+    )
+  ) {
+
+    return null;
+
+  }
+
+
   let entry;
+
   let sl;
 
+
+  // ----------------------------------------------------------
+  // BUY
+  // ----------------------------------------------------------
 
   if (
     direction === "BUY"
   ) {
 
-    const atrEntry =
+    const pullbackEntry =
       price -
       atrValue *
         CONFIG.ATR_ENTRY_MULTIPLIER;
 
 
+    const emaEntry =
+      fast.ema20 !== null
+
+        ? fast.ema20 -
+          atrValue *
+            0.10
+
+        : pullbackEntry;
+
+
     const structureEntry =
       levels.support +
       atrValue *
-        0.20;
+        CONFIG.STRUCTURE_ENTRY_ATR;
 
 
-    entry =
+    const rawEntry =
       Math.max(
-        atrEntry,
+
+        pullbackEntry,
+
+        emaEntry,
+
         structureEntry
+
       );
 
 
+    const minEntry =
+      price -
+      atrValue *
+        CONFIG.MAX_ENTRY_DISTANCE_ATR;
+
+
+    const maxEntry =
+      price -
+      atrValue *
+        CONFIG.MIN_ENTRY_DISTANCE_ATR;
+
+
     entry =
-      Math.min(
-        entry,
-        price
+      clamp(
+        rawEntry,
+        minEntry,
+        maxEntry
       );
 
 
@@ -3025,34 +4275,70 @@ function buildTradePlan(
 
         levels.support -
           atrValue *
-            0.10
+            CONFIG.SL_BUFFER_ATR
+
       );
 
-  } else {
+  }
 
-    const atrEntry =
+
+  // ----------------------------------------------------------
+  // SELL
+  // ----------------------------------------------------------
+
+  else {
+
+    const pullbackEntry =
       price +
       atrValue *
         CONFIG.ATR_ENTRY_MULTIPLIER;
 
 
+    const emaEntry =
+      fast.ema20 !== null
+
+        ? fast.ema20 +
+          atrValue *
+            0.10
+
+        : pullbackEntry;
+
+
     const structureEntry =
       levels.resistance -
       atrValue *
-        0.20;
+        CONFIG.STRUCTURE_ENTRY_ATR;
 
 
-    entry =
+    const rawEntry =
       Math.min(
-        atrEntry,
+
+        pullbackEntry,
+
+        emaEntry,
+
         structureEntry
+
       );
 
 
+    const minEntry =
+      price +
+      atrValue *
+        CONFIG.MIN_ENTRY_DISTANCE_ATR;
+
+
+    const maxEntry =
+      price +
+      atrValue *
+        CONFIG.MAX_ENTRY_DISTANCE_ATR;
+
+
     entry =
-      Math.max(
-        entry,
-        price
+      clamp(
+        rawEntry,
+        minEntry,
+        maxEntry
       );
 
 
@@ -3065,14 +4351,22 @@ function buildTradePlan(
 
         levels.resistance +
           atrValue *
-            0.10
+            CONFIG.SL_BUFFER_ATR
+
       );
+
   }
 
 
+
+  // ----------------------------------------------------------
+  // RISK
+  // ----------------------------------------------------------
+
   const risk =
     Math.abs(
-      entry - sl
+      entry -
+      sl
     );
 
 
@@ -3080,20 +4374,43 @@ function buildTradePlan(
     !Number.isFinite(risk) ||
     risk <= 0
   ) {
+
     return null;
+
   }
 
 
+  const riskAtr =
+    risk /
+    atrValue;
+
+
+  if (
+    riskAtr >
+    CONFIG.MAX_RISK_ATR
+  ) {
+
+    return null;
+
+  }
+
+
+  // ----------------------------------------------------------
+  // ENTRY DISTANCE
+  // ----------------------------------------------------------
+
   const distanceAtr =
     Math.abs(
-      price - entry
+      price -
+      entry
     ) /
     atrValue;
 
 
   const distancePercent =
     Math.abs(
-      price - entry
+      price -
+      entry
     ) /
     price *
     100;
@@ -3103,7 +4420,9 @@ function buildTradePlan(
     distanceAtr >
     CONFIG.MAX_ENTRY_DISTANCE_ATR
   ) {
+
     return null;
+
   }
 
 
@@ -3111,67 +4430,167 @@ function buildTradePlan(
     distancePercent >
     CONFIG.MAX_ENTRY_DISTANCE_PERCENT
   ) {
+
     return null;
+
   }
 
 
-  if (
-    distanceAtr <
-    CONFIG.MIN_ENTRY_DISTANCE_ATR
-  ) {
-    entry = price;
-  }
 
-
-  const finalRisk =
-    Math.abs(
-      entry - sl
-    );
-
+  // ----------------------------------------------------------
+  // TARGETS
+  // ----------------------------------------------------------
 
   const tp1 =
     direction === "BUY"
+
       ? entry +
-        finalRisk *
-          1.5
+        risk *
+          CONFIG.TP1_R
+
       : entry -
-        finalRisk *
-          1.5;
+        risk *
+          CONFIG.TP1_R;
 
 
   const tp2 =
     direction === "BUY"
+
       ? entry +
-        finalRisk *
-          2.2
+        risk *
+          CONFIG.TP2_R
+
       : entry -
-        finalRisk *
-          2.2;
+        risk *
+          CONFIG.TP2_R;
 
 
   const tp3 =
     direction === "BUY"
+
       ? entry +
-        finalRisk *
-          3.0
+        risk *
+          CONFIG.TP3_R
+
       : entry -
-        finalRisk *
-          3.0;
+        risk *
+          CONFIG.TP3_R;
 
 
-  const rr =
-    Math.abs(
-      tp1 - entry
-    ) /
-    finalRisk;
+
+  // ----------------------------------------------------------
+  // ROOM CHECK
+  //
+  // We do not want TP1 immediately inside
+  // a nearby major recent level.
+  // ----------------------------------------------------------
+
+  const minimumRoom =
+    risk *
+    CONFIG.TP1_R;
 
 
   if (
-    rr <
-    CONFIG.MIN_RR
+    direction === "BUY"
   ) {
-    return null;
+
+    if (
+      levels.resistance >
+        entry &&
+      levels.resistance -
+        entry <
+        minimumRoom
+    ) {
+
+      return null;
+
+    }
+
+  } else {
+
+    if (
+      levels.support <
+        entry &&
+      entry -
+        levels.support <
+        minimumRoom
+    ) {
+
+      return null;
+
+    }
+
   }
+
+
+
+  // ----------------------------------------------------------
+  // BREAK EVEN
+  // ----------------------------------------------------------
+
+  const breakEvenTrigger =
+    direction === "BUY"
+
+      ? entry +
+        risk *
+          CONFIG.BREAK_EVEN_AT_R
+
+      : entry -
+        risk *
+          CONFIG.BREAK_EVEN_AT_R;
+
+
+  const breakEvenStop =
+    direction === "BUY"
+
+      ? entry +
+        risk *
+          CONFIG.BREAK_EVEN_PLUS_R
+
+      : entry -
+        risk *
+          CONFIG.BREAK_EVEN_PLUS_R;
+
+
+
+  // ----------------------------------------------------------
+  // TRAILING START
+  // ----------------------------------------------------------
+
+  const trailStart =
+    direction === "BUY"
+
+      ? entry +
+        risk *
+          CONFIG.TRAIL_START_R
+
+      : entry -
+        risk *
+          CONFIG.TRAIL_START_R;
+
+
+
+  // ----------------------------------------------------------
+  // EARLY EXIT PRICE
+  //
+  // This is NOT the hard SL.
+  // It is a softer invalidation line.
+  //
+  // The later EA should combine this with
+  // indicator reversal confirmation.
+  // ----------------------------------------------------------
+
+  const earlyExitLevel =
+    direction === "BUY"
+
+      ? entry -
+        atrValue *
+          CONFIG.EARLY_EXIT_ATR
+
+      : entry +
+        atrValue *
+          CONFIG.EARLY_EXIT_ATR;
+
 
 
   return {
@@ -3181,7 +4600,9 @@ function buildTradePlan(
         ? "BUY LIMIT"
         : "SELL LIMIT",
 
+
     direction,
+
 
     entry:
       round(
@@ -3189,11 +4610,13 @@ function buildTradePlan(
         2
       ),
 
+
     sl:
       round(
         sl,
         2
       ),
+
 
     tp1:
       round(
@@ -3201,11 +4624,13 @@ function buildTradePlan(
         2
       ),
 
+
     tp2:
       round(
         tp2,
         2
       ),
+
 
     tp3:
       round(
@@ -3213,11 +4638,13 @@ function buildTradePlan(
         2
       ),
 
+
     rr:
       round(
-        rr,
+        CONFIG.TP1_R,
         2
       ),
+
 
     atr:
       round(
@@ -3225,19 +4652,343 @@ function buildTradePlan(
         2
       ),
 
+
+    risk:
+      round(
+        risk,
+        2
+      ),
+
+
+    riskAtr:
+      round(
+        riskAtr,
+        2
+      ),
+
+
     distanceAtr:
       round(
         distanceAtr,
         2
       ),
 
+
     distancePercent:
       round(
         distancePercent,
         3
-      )
+      ),
+
+
+    structure:
+
+      {
+
+        support:
+          round(
+            levels.support,
+            2
+          ),
+
+        resistance:
+          round(
+            levels.resistance,
+            2
+          )
+
+      },
+
+
+    management:
+
+      {
+
+        pendingExpiryMinutes:
+          CONFIG.PENDING_EXPIRY_MINUTES,
+
+
+        breakEvenAtR:
+          CONFIG.BREAK_EVEN_AT_R,
+
+
+        breakEvenTrigger:
+          round(
+            breakEvenTrigger,
+            2
+          ),
+
+
+        breakEvenStop:
+          round(
+            breakEvenStop,
+            2
+          ),
+
+
+        trailStartR:
+          CONFIG.TRAIL_START_R,
+
+
+        trailStart:
+          round(
+            trailStart,
+            2
+          ),
+
+
+        trailAtrMultiplier:
+          CONFIG.TRAIL_ATR_MULTIPLIER,
+
+
+        tp1ClosePercent:
+          CONFIG.TP1_CLOSE_PERCENT,
+
+
+        tp2ClosePercent:
+          CONFIG.TP2_CLOSE_PERCENT,
+
+
+        tp3ClosePercent:
+          CONFIG.TP3_CLOSE_PERCENT,
+
+
+        earlyExitLevel:
+          round(
+            earlyExitLevel,
+            2
+          )
+
+      }
+
   };
+
 }
+
+
+
+// ============================================================
+// EARLY EXIT LOGIC
+// ============================================================
+//
+// Used later by MT5 EA after a position is open.
+//
+// The idea is NOT to close on one noisy indicator.
+// At least two reversal confirmations are required.
+//
+// ============================================================
+
+function evaluateEarlyExit(
+  fast,
+  direction,
+  entry
+) {
+
+  if (
+    !fast
+  ) {
+
+    return {
+
+      exit: false,
+
+      confirmations: 0,
+
+      reasons: []
+
+    };
+
+  }
+
+
+  const reasons = [];
+
+
+  let confirmations = 0;
+
+
+
+  if (
+    direction === "BUY"
+  ) {
+
+    if (
+      fast.trend ===
+      "BEARISH"
+    ) {
+
+      confirmations++;
+
+      reasons.push(
+        "15M trend turned bearish"
+      );
+
+    }
+
+
+    if (
+      fast.structure ===
+      "BEARISH"
+    ) {
+
+      confirmations++;
+
+      reasons.push(
+        "15M structure turned bearish"
+      );
+
+    }
+
+
+    if (
+      fast.minusDI >
+        fast.plusDI &&
+      fast.diSpread >=
+        CONFIG.MIN_DI_SPREAD
+    ) {
+
+      confirmations++;
+
+      reasons.push(
+        "15M DI turned bearish"
+      );
+
+    }
+
+
+    if (
+      fast.macd?.histogram !== null &&
+      fast.macd?.histogram < 0
+    ) {
+
+      confirmations++;
+
+      reasons.push(
+        "15M MACD turned bearish"
+      );
+
+    }
+
+
+    if (
+      Number.isFinite(entry) &&
+      Number.isFinite(fast.price) &&
+      Number.isFinite(fast.atr) &&
+      fast.price <
+        entry -
+        fast.atr *
+          CONFIG.EARLY_EXIT_ATR
+    ) {
+
+      confirmations++;
+
+      reasons.push(
+        "Price crossed early-exit level"
+      );
+
+    }
+
+  }
+
+
+
+  if (
+    direction === "SELL"
+  ) {
+
+    if (
+      fast.trend ===
+      "BULLISH"
+    ) {
+
+      confirmations++;
+
+      reasons.push(
+        "15M trend turned bullish"
+      );
+
+    }
+
+
+    if (
+      fast.structure ===
+      "BULLISH"
+    ) {
+
+      confirmations++;
+
+      reasons.push(
+        "15M structure turned bullish"
+      );
+
+    }
+
+
+    if (
+      fast.plusDI >
+        fast.minusDI &&
+      fast.diSpread >=
+        CONFIG.MIN_DI_SPREAD
+    ) {
+
+      confirmations++;
+
+      reasons.push(
+        "15M DI turned bullish"
+      );
+
+    }
+
+
+    if (
+      fast.macd?.histogram !== null &&
+      fast.macd?.histogram > 0
+    ) {
+
+      confirmations++;
+
+      reasons.push(
+        "15M MACD turned bullish"
+      );
+
+    }
+
+
+    if (
+      Number.isFinite(entry) &&
+      Number.isFinite(fast.price) &&
+      Number.isFinite(fast.atr) &&
+      fast.price >
+        entry +
+        fast.atr *
+          CONFIG.EARLY_EXIT_ATR
+    ) {
+
+      confirmations++;
+
+      reasons.push(
+        "Price crossed early-exit level"
+      );
+
+    }
+
+  }
+
+
+  return {
+
+    exit:
+      confirmations >=
+      CONFIG.EARLY_EXIT_MIN_CONFIRMATIONS,
+
+    confirmations,
+
+    reasons
+
+  };
+
+}
+
 
 
 // ============================================================
@@ -3264,6 +5015,18 @@ function waitResponse(
       details.score ??
       null,
 
+    buyScore:
+      details.buyScore ??
+      null,
+
+    sellScore:
+      details.sellScore ??
+      null,
+
+    directionLead:
+      details.directionLead ??
+      null,
+
     reason,
 
     session:
@@ -3283,14 +5046,25 @@ function waitResponse(
       details.slow ??
       null,
 
+    scoreBreakdown:
+      details.scoreBreakdown ??
+      null,
+
+    directionCheck:
+      details.directionCheck ??
+      null,
+
     news:
       details.news ??
       null,
 
     timestamp:
       new Date().toISOString()
+
   };
+
 }
+
 
 
 // ============================================================
@@ -3301,20 +5075,36 @@ async function generateSignal(
   env
 ) {
 
-  // Session filter
-  if (!inSession()) {
+  // ----------------------------------------------------------
+  // SESSION FILTER
+  // ----------------------------------------------------------
+
+  if (
+    !inSession()
+  ) {
 
     return waitResponse(
       "Outside trading session (London + New York only)."
     );
+
   }
 
 
+
+  // ----------------------------------------------------------
+  // LOAD DATA
+  // ----------------------------------------------------------
+
   const [
+
     fastCandles,
+
     slowCandles,
+
     newsEvents
+
   ] =
+
     await Promise.all([
 
       getTimeSeries(
@@ -3327,10 +5117,49 @@ async function generateSignal(
         CONFIG.INTERVAL_SLOW
       ),
 
-      getLiveNews(env)
+      getLiveNews(
+        env
+      )
 
     ]);
 
+
+
+  // ----------------------------------------------------------
+  // FRESH DATA GATE
+  // ----------------------------------------------------------
+
+  const freshness =
+    signalDataFresh();
+
+
+  if (
+    !freshness.ok
+  ) {
+
+    return waitResponse(
+
+      "Fresh market data is not available. Signal blocked for safety.",
+
+      {
+
+        price:
+          fastCandles?.[
+            fastCandles.length - 1
+          ]?.close ??
+          null
+
+      }
+
+    );
+
+  }
+
+
+
+  // ----------------------------------------------------------
+  // ANALYSIS
+  // ----------------------------------------------------------
 
   const fast =
     analyzeTimeframe(
@@ -3350,7 +5179,11 @@ async function generateSignal(
     );
 
 
-  // News block
+
+  // ----------------------------------------------------------
+  // NEWS BLOCK
+  // ----------------------------------------------------------
+
   if (
     news.blocked
   ) {
@@ -3360,6 +5193,7 @@ async function generateSignal(
       `High/medium USD news window: ${news.blockedEvent.title}`,
 
       {
+
         price:
           fast.price,
 
@@ -3368,12 +5202,20 @@ async function generateSignal(
         slow,
 
         news
+
       }
+
     );
+
   }
 
 
-  const buyScore =
+
+  // ----------------------------------------------------------
+  // CALCULATE BOTH DIRECTIONS
+  // ----------------------------------------------------------
+
+  const buyResult =
     calculateScore(
       fast,
       slow,
@@ -3381,7 +5223,7 @@ async function generateSignal(
     );
 
 
-  const sellScore =
+  const sellResult =
     calculateScore(
       fast,
       slow,
@@ -3389,10 +5231,20 @@ async function generateSignal(
     );
 
 
+  const buyScore =
+    buyResult.score;
+
+
+  const sellScore =
+    sellResult.score;
+
+
   const direction =
     buyScore >=
       sellScore
+
       ? "BUY"
+
       : "SELL";
 
 
@@ -3415,6 +5267,19 @@ async function generateSignal(
     otherScore;
 
 
+  const selectedBreakdown =
+    direction === "BUY"
+
+      ? buyResult
+
+      : sellResult;
+
+
+
+  // ----------------------------------------------------------
+  // STRICT DIRECTION CHECK
+  // ----------------------------------------------------------
+
   const check =
     directionCheck(
       fast,
@@ -3423,7 +5288,11 @@ async function generateSignal(
     );
 
 
-  // Minimum score
+
+  // ----------------------------------------------------------
+  // MIN SCORE
+  // ----------------------------------------------------------
+
   if (
     score <
     CONFIG.MIN_SCORE
@@ -3434,7 +5303,15 @@ async function generateSignal(
       `Score ${score} below minimum ${CONFIG.MIN_SCORE}.`,
 
       {
+
         score,
+
+        buyScore,
+
+        sellScore,
+
+        directionLead:
+          lead,
 
         price:
           fast.price,
@@ -3443,13 +5320,26 @@ async function generateSignal(
 
         slow,
 
+        scoreBreakdown:
+          selectedBreakdown.breakdown,
+
+        directionCheck:
+          check,
+
         news
+
       }
+
     );
+
   }
 
 
-  // Direction lead
+
+  // ----------------------------------------------------------
+  // DIRECTION LEAD
+  // ----------------------------------------------------------
+
   if (
     lead <
     CONFIG.MIN_DIRECTION_LEAD
@@ -3460,7 +5350,15 @@ async function generateSignal(
       `Direction lead ${lead} below minimum ${CONFIG.MIN_DIRECTION_LEAD}.`,
 
       {
+
         score,
+
+        buyScore,
+
+        sellScore,
+
+        directionLead:
+          lead,
 
         price:
           fast.price,
@@ -3469,13 +5367,26 @@ async function generateSignal(
 
         slow,
 
+        scoreBreakdown:
+          selectedBreakdown.breakdown,
+
+        directionCheck:
+          check,
+
         news
+
       }
+
     );
+
   }
 
 
-  // Strict confirmation
+
+  // ----------------------------------------------------------
+  // STRICT CONFIRMATION
+  // ----------------------------------------------------------
+
   if (
     !check.ok
   ) {
@@ -3483,11 +5394,24 @@ async function generateSignal(
     return waitResponse(
 
       check.reasons
-        .slice(0, 4)
-        .join(" | "),
+        .slice(
+          0,
+          5
+        )
+        .join(
+          " | "
+        ),
 
       {
+
         score,
+
+        buyScore,
+
+        sellScore,
+
+        directionLead:
+          lead,
 
         price:
           fast.price,
@@ -3496,11 +5420,25 @@ async function generateSignal(
 
         slow,
 
+        scoreBreakdown:
+          selectedBreakdown.breakdown,
+
+        directionCheck:
+          check,
+
         news
+
       }
+
     );
+
   }
 
+
+
+  // ----------------------------------------------------------
+  // BUILD TRADE PLAN
+  // ----------------------------------------------------------
 
   const plan =
     buildTradePlan(
@@ -3510,14 +5448,24 @@ async function generateSignal(
     );
 
 
-  if (!plan) {
+  if (
+    !plan
+  ) {
 
     return waitResponse(
 
-      "Trade plan failed risk/entry-distance filters.",
+      "Trade plan failed risk, entry-distance or market-room filters.",
 
       {
+
         score,
+
+        buyScore,
+
+        sellScore,
+
+        directionLead:
+          lead,
 
         price:
           fast.price,
@@ -3526,11 +5474,25 @@ async function generateSignal(
 
         slow,
 
+        scoreBreakdown:
+          selectedBreakdown.breakdown,
+
+        directionCheck:
+          check,
+
         news
+
       }
+
     );
+
   }
 
+
+
+  // ----------------------------------------------------------
+  // RETURN SIGNAL
+  // ----------------------------------------------------------
 
   return {
 
@@ -3546,14 +5508,17 @@ async function generateSignal(
     setup:
       plan.type,
 
+
     score,
 
     buyScore,
 
     sellScore,
 
+
     directionLead:
       lead,
+
 
     price:
       round(
@@ -3561,19 +5526,67 @@ async function generateSignal(
         2
       ),
 
+
     fast,
 
     slow,
 
     news,
 
+
+    scoreBreakdown:
+      selectedBreakdown.breakdown,
+
+
+    directionCheck:
+      check,
+
+
     trade:
       plan,
 
+
+    management:
+
+      {
+
+        pendingExpiryMinutes:
+          CONFIG.PENDING_EXPIRY_MINUTES,
+
+        breakEvenAtR:
+          CONFIG.BREAK_EVEN_AT_R,
+
+        breakEvenPlusR:
+          CONFIG.BREAK_EVEN_PLUS_R,
+
+        trailStartR:
+          CONFIG.TRAIL_START_R,
+
+        trailAtrMultiplier:
+          CONFIG.TRAIL_ATR_MULTIPLIER,
+
+        tp1ClosePercent:
+          CONFIG.TP1_CLOSE_PERCENT,
+
+        tp2ClosePercent:
+          CONFIG.TP2_CLOSE_PERCENT,
+
+        tp3ClosePercent:
+          CONFIG.TP3_CLOSE_PERCENT,
+
+        earlyExitConfirmations:
+          CONFIG.EARLY_EXIT_MIN_CONFIRMATIONS
+
+      },
+
+
     timestamp:
       new Date().toISOString()
+
   };
+
 }
+
 
 
 // ============================================================
@@ -3593,8 +5606,12 @@ function telegramApiUrl(
 
 
   return `https://api.telegram.org/bot${token}/${method}`;
+
 }
 
+
+
+// ------------------------------------------------------------
 
 async function telegramApi(
   env,
@@ -3609,11 +5626,14 @@ async function telegramApi(
     );
 
 
-  if (!token) {
+  if (
+    !token
+  ) {
 
     throw new Error(
       "TELEGRAM_BOT_TOKEN is missing."
     );
+
   }
 
 
@@ -3626,21 +5646,26 @@ async function telegramApi(
       ),
 
       {
+
         method:
           "POST",
 
         headers: {
+
           "content-type":
             "application/json"
+
         },
 
         body:
           JSON.stringify(
             payload
           )
+
       },
 
       12_000
+
     );
 
 
@@ -3654,15 +5679,22 @@ async function telegramApi(
   ) {
 
     throw new Error(
+
       data?.description ||
       `Telegram HTTP ${response.status}`
+
     );
+
   }
 
 
   return data;
+
 }
 
+
+
+// ------------------------------------------------------------
 
 async function sendTelegram(
   env,
@@ -3676,11 +5708,14 @@ async function sendTelegram(
     );
 
 
-  if (!chatId) {
+  if (
+    !chatId
+  ) {
 
     throw new Error(
       "TELEGRAM_CHAT_ID is missing."
     );
+
   }
 
 
@@ -3689,8 +5724,12 @@ async function sendTelegram(
     chatId,
     text
   );
+
 }
 
+
+
+// ------------------------------------------------------------
 
 async function sendTelegramToChat(
   env,
@@ -3699,9 +5738,13 @@ async function sendTelegramToChat(
 ) {
 
   return telegramApi(
+
     env,
+
     "sendMessage",
+
     {
+
       chat_id:
         chatId,
 
@@ -3709,9 +5752,13 @@ async function sendTelegramToChat(
 
       disable_web_page_preview:
         true
+
     }
+
   );
+
 }
+
 
 
 // ============================================================
@@ -3726,7 +5773,7 @@ function formatSignalMessage(
     signal.trade;
 
 
-  return [
+  const lines = [
 
     `💎 HAKIM GOLD SIGNALS ${CONFIG.VERSION}`,
 
@@ -3737,6 +5784,10 @@ function formatSignalMessage(
     `📊 ${t.type}`,
 
     `⭐ Score: ${signal.score}/100`,
+
+    `🏆 BUY: ${safeValue(signal.buyScore)} | SELL: ${safeValue(signal.sellScore)}`,
+
+    `🎯 Lead: ${safeValue(signal.directionLead)}`,
 
     "",
 
@@ -3752,7 +5803,11 @@ function formatSignalMessage(
 
     "",
 
-    `📊 R:R: ${safeValue(t.rr)}`,
+    `📊 R:R TP1: ${safeValue(t.rr)}`,
+
+    `📏 Risk: ${safeValue(t.risk)}`,
+
+    "",
 
     `📈 15M: ${signal.fast.trend}`,
 
@@ -3762,20 +5817,53 @@ function formatSignalMessage(
 
     `📊 DI Spread: ${safeValue(round(signal.fast.diSpread, 2))}`,
 
-    `📉 RSI: ${safeValue(round(signal.fast.rsi, 2))}`,
+    `📉 RSI 15M: ${safeValue(round(signal.fast.rsi, 2))}`,
+
+    `⚡ Momentum: ${safeValue(round(signal.fast.momentum, 4))}`,
 
     "",
 
-    `💰 مدیریت سرمایه و کنترل ریسک را رعایت کنید.`,
+    `🔒 BE Trigger: ${safeValue(t.management?.breakEvenTrigger)}`,
 
-    `📊 این سیگنال بر اساس شرایط فعلی بازار است و با تغییر شرایط ممکن است اعتبار آن از بین برود.`,
+    `🛡 BE Stop: ${safeValue(t.management?.breakEvenStop)}`,
+
+    `📈 Trail Start: ${safeValue(t.management?.trailStart)}`,
+
+    `⏱ Pending Expiry: ${safeValue(t.management?.pendingExpiryMinutes)}m`,
+
+    "",
+
+    `🚨 Early Exit Level: ${safeValue(t.management?.earlyExitLevel)}`,
+
+    `⚠️ Early Exit: پس از تأیید حداقل ${CONFIG.EARLY_EXIT_MIN_CONFIRMATIONS} نشانه برگشت`,
+
+    "",
+
+    `💰 TP1: ${CONFIG.TP1_CLOSE_PERCENT}%`,
+
+    `💰 TP2: ${CONFIG.TP2_CLOSE_PERCENT}%`,
+
+    `💰 TP3: ${CONFIG.TP3_CLOSE_PERCENT}%`,
+
+    "",
+
+    `📌 شرایط بازار تغییر کند، اعتبار Setup از بین می‌رود.`,
+
+    `📌 این موتور تضمین سود نمی‌دهد.`,
 
     "",
 
     CONFIG.FOOTER
 
-  ].join("\n");
+  ];
+
+
+  return lines.join(
+    "\n"
+  );
+
 }
+
 
 
 // ============================================================
@@ -3786,7 +5874,7 @@ function formatWaitMessage(
   result
 ) {
 
-  return [
+  const lines = [
 
     `💎 HAKIM GOLD SIGNALS ${CONFIG.VERSION}`,
 
@@ -3797,6 +5885,12 @@ function formatWaitMessage(
     `⏸ WAIT`,
 
     `⭐ Score: ${safeValue(result.score)}/100`,
+
+    `🏆 BUY: ${safeValue(result.buyScore)}`,
+
+    `🏆 SELL: ${safeValue(result.sellScore)}`,
+
+    `🎯 Lead: ${safeValue(result.directionLead)}`,
 
     "",
 
@@ -3818,14 +5912,55 @@ function formatWaitMessage(
 
     "",
 
-    `ℹ️ ${result.reason || "شرایط ورود کامل نشده است."}`,
+    `ℹ️ ${result.reason || "شرایط ورود کامل نشده است."}`
 
+  ];
+
+
+  // ----------------------------------------------------------
+  // SCORE BREAKDOWN SUMMARY
+  // ----------------------------------------------------------
+
+  if (
+    Array.isArray(
+      result.scoreBreakdown
+    )
+  ) {
+
+    lines.push(
+      "",
+      "🧮 Score Breakdown:"
+    );
+
+
+    for (
+      const item of
+      result.scoreBreakdown
+    ) {
+
+      lines.push(
+
+        `${item.passed ? "✅" : "❌"} ${item.name}: ${item.score}/${item.max}`
+
+      );
+
+    }
+
+  }
+
+
+  lines.push(
     "",
-
     CONFIG.FOOTER
+  );
 
-  ].join("\n");
+
+  return lines.join(
+    "\n"
+  );
+
 }
+
 
 
 // ============================================================
@@ -3841,7 +5976,9 @@ async function sendNewsAlert(
     !CONFIG.TELEGRAM_ENABLED ||
     !CONFIG.TELEGRAM_SEND_NEWS
   ) {
+
     return;
+
   }
 
 
@@ -3855,7 +5992,9 @@ async function sendNewsAlert(
       id
     )
   ) {
+
     return;
+
   }
 
 
@@ -3868,7 +6007,7 @@ async function sendNewsAlert(
   const message =
     [
 
-      `📰 HAKIM GOLD SIGNALS`,
+      `📰 HAKIM GOLD SIGNALS ${CONFIG.VERSION}`,
 
       "",
 
@@ -3890,7 +6029,9 @@ async function sendNewsAlert(
 
       CONFIG.FOOTER
 
-    ].join("\n");
+    ].join(
+      "\n"
+    );
 
 
   try {
@@ -3908,7 +6049,9 @@ async function sendNewsAlert(
     );
 
   } catch {}
+
 }
+
 
 
 // ============================================================
@@ -3926,24 +6069,31 @@ async function maybeSendSignal(
   ) {
 
     return {
+
       sent: false,
+
       reason:
         "Telegram signal sending disabled."
+
     };
+
   }
 
 
-  // WAIT is not automatically sent
   if (
     signal.signal ===
     "WAIT"
   ) {
 
     return {
+
       sent: false,
+
       reason:
         "WAIT signals are not automatically sent."
+
     };
+
   }
 
 
@@ -3953,13 +6103,22 @@ async function maybeSendSignal(
 
   const key =
     [
+
       "signal",
+
       CONFIG.SYMBOL,
+
       signal.signal,
+
       t.entry,
+
       t.sl,
+
       signal.score
-    ].join(":");
+
+    ].join(
+      ":"
+    );
 
 
   if (
@@ -3970,18 +6129,25 @@ async function maybeSendSignal(
   ) {
 
     return {
+
       sent: false,
+
       reason:
         "Duplicate signal blocked."
+
     };
+
   }
 
 
   await sendTelegram(
+
     env,
+
     formatSignalMessage(
       signal
     )
+
   );
 
 
@@ -3993,11 +6159,16 @@ async function maybeSendSignal(
 
 
   return {
+
     sent: true,
+
     reason:
       "Signal sent."
+
   };
+
 }
+
 
 
 // ============================================================
@@ -4041,7 +6212,9 @@ async function runScheduled(
         env,
         state.upcoming
       );
+
     }
+
   }
 
 
@@ -4070,8 +6243,11 @@ async function runScheduled(
 
     timestamp:
       new Date().toISOString()
+
   };
+
 }
+
 
 
 // ============================================================
@@ -4086,8 +6262,12 @@ function getWebhookSecret(
     env,
     "TELEGRAM_WEBHOOK_SECRET"
   );
+
 }
 
+
+
+// ------------------------------------------------------------
 
 function verifyTelegramWebhook(
   request,
@@ -4100,8 +6280,12 @@ function verifyTelegramWebhook(
     );
 
 
-  if (!expected) {
+  if (
+    !expected
+  ) {
+
     return true;
+
   }
 
 
@@ -4115,8 +6299,12 @@ function verifyTelegramWebhook(
     received ===
     expected
   );
+
 }
 
+
+
+// ------------------------------------------------------------
 
 async function handleTelegramUpdate(
   request,
@@ -4131,13 +6319,20 @@ async function handleTelegramUpdate(
   ) {
 
     return jsonResponse(
+
       {
+
         ok: false,
+
         error:
           "Invalid Telegram webhook secret."
+
       },
+
       403
+
     );
+
   }
 
 
@@ -4160,10 +6355,14 @@ async function handleTelegramUpdate(
     ).trim();
 
 
-  if (!chatId) {
+  if (
+    !chatId
+  ) {
+
     return jsonResponse({
       ok: true
     });
+
   }
 
 
@@ -4205,14 +6404,19 @@ async function handleTelegramUpdate(
 
           CONFIG.FOOTER
 
-        ].join("\n")
+        ].join(
+          "\n"
+        )
+
       );
 
 
       return jsonResponse({
         ok: true
       });
+
     }
+
 
 
     // --------------------------------------------------------
@@ -4255,7 +6459,9 @@ async function handleTelegramUpdate(
 
           `⚡ 1H cache: ${cache.slow_1h.cached ? cache.slow_1h.age_seconds + "s" : "-"}`,
 
-          `💳 Credits left: ${cache.fast_15m.api_credits_left ?? "-"}`,
+          `💳 15M credits left: ${cache.fast_15m.api_credits_left ?? "-"}`,
+
+          `💳 1H credits left: ${cache.slow_1h.api_credits_left ?? "-"}`,
 
           `⏱ Rate limit: ${cache.rate_limit_active ? cache.rate_limit_seconds_left + "s" : "OFF"}`,
 
@@ -4263,14 +6469,19 @@ async function handleTelegramUpdate(
 
           CONFIG.FOOTER
 
-        ].join("\n")
+        ].join(
+          "\n"
+        )
+
       );
 
 
       return jsonResponse({
         ok: true
       });
+
     }
+
 
 
     // --------------------------------------------------------
@@ -4305,13 +6516,16 @@ async function handleTelegramUpdate(
           : formatSignalMessage(
               signal
             )
+
       );
 
 
       return jsonResponse({
         ok: true
       });
+
     }
+
 
 
     // --------------------------------------------------------
@@ -4350,10 +6564,14 @@ async function handleTelegramUpdate(
       ) {
 
         lines.push(
+
           "✅ خبر مهم USD در بازه بررسی‌شده پیدا نشد."
+
         );
 
-      } else {
+      }
+
+      else {
 
         for (
           const event of
@@ -4364,9 +6582,13 @@ async function handleTelegramUpdate(
         ) {
 
           lines.push(
+
             `• ${event.impact} | ${event.currency} | ${event.title}`
+
           );
+
         }
+
       }
 
 
@@ -4377,16 +6599,24 @@ async function handleTelegramUpdate(
 
 
       await sendTelegramToChat(
+
         env,
+
         chatId,
-        lines.join("\n")
+
+        lines.join(
+          "\n"
+        )
+
       );
 
 
       return jsonResponse({
         ok: true
       });
+
     }
+
 
 
     // --------------------------------------------------------
@@ -4417,7 +6647,10 @@ async function handleTelegramUpdate(
 
         "/news"
 
-      ].join("\n")
+      ].join(
+        "\n"
+      )
+
     );
 
 
@@ -4426,7 +6659,9 @@ async function handleTelegramUpdate(
     });
 
 
-  } catch (error) {
+  } catch (
+    error
+  ) {
 
     try {
 
@@ -4440,6 +6675,7 @@ async function handleTelegramUpdate(
           error?.message ||
           error
         )}`
+
       );
 
     } catch {}
@@ -4448,6 +6684,7 @@ async function handleTelegramUpdate(
     return jsonResponse(
 
       {
+
         ok: false,
 
         error:
@@ -4455,13 +6692,20 @@ async function handleTelegramUpdate(
             error?.message ||
             error
           )
+
       },
 
       500
+
     );
+
   }
+
 }
 
+
+
+// ------------------------------------------------------------
 
 async function telegramWebhook(
   request,
@@ -4472,7 +6716,9 @@ async function telegramWebhook(
     request,
     env
   );
+
 }
+
 
 
 // ============================================================
@@ -4507,13 +6753,17 @@ async function setTelegramWebhook(
 
     allowed_updates:
       ["message"]
+
   };
 
 
-  if (secret) {
+  if (
+    secret
+  ) {
 
     payload.secret_token =
       secret;
+
   }
 
 
@@ -4525,6 +6775,7 @@ async function setTelegramWebhook(
       "setWebhook",
 
       payload
+
     );
 
 
@@ -4539,7 +6790,9 @@ async function setTelegramWebhook(
       result
 
   });
+
 }
+
 
 
 // ============================================================
@@ -4558,6 +6811,7 @@ async function getTelegramWebhookInfo(
       "getWebhookInfo",
 
       {}
+
     );
 
 
@@ -4569,7 +6823,9 @@ async function getTelegramWebhookInfo(
       result
 
   });
+
 }
+
 
 
 // ============================================================
@@ -4611,8 +6867,12 @@ async function healthResponse(
     symbol:
       CONFIG.SYMBOL,
 
+
     twelve_data:
-      Boolean(apiKey),
+      Boolean(
+        apiKey
+      ),
+
 
     telegram:
       Boolean(
@@ -4620,19 +6880,32 @@ async function healthResponse(
         chatId
       ),
 
+
     telegram_bot_token:
-      Boolean(botToken),
+      Boolean(
+        botToken
+      ),
+
 
     telegram_chat_id:
-      Boolean(chatId),
+      Boolean(
+        chatId
+      ),
+
 
     session:
       inSession()
         ? "OPEN"
         : "CLOSED",
 
+
     cache:
       getTwelveDataCacheStatus(),
+
+
+    signal_freshness:
+      signalDataFresh(),
+
 
     news_cache: {
 
@@ -4643,23 +6916,30 @@ async function healthResponse(
 
       age_seconds:
         memory.news.data
+
           ? Math.floor(
               (
                 Date.now() -
                 memory.news.fetchedAt
               ) / 1000
             )
+
           : null,
+
 
       last_error:
         memory.news.lastError
+
     },
+
 
     timestamp:
       new Date().toISOString()
 
   });
+
 }
+
 
 
 // ============================================================
@@ -4717,6 +6997,7 @@ async function testPriceResponse(
     test:
       "DIRECT XAU/USD PRICE TEST",
 
+
     fast_15m: {
 
       count:
@@ -4729,6 +7010,7 @@ async function testPriceResponse(
         fastLast
 
     },
+
 
     slow_1h: {
 
@@ -4743,14 +7025,22 @@ async function testPriceResponse(
 
     },
 
+
     cache:
       getTwelveDataCacheStatus(),
+
+
+    signal_freshness:
+      signalDataFresh(),
+
 
     timestamp:
       new Date().toISOString()
 
   });
+
 }
+
 
 
 // ============================================================
@@ -4799,7 +7089,9 @@ async function newsResponse(
       new Date().toISOString()
 
   });
+
 }
+
 
 
 // ============================================================
@@ -4835,6 +7127,7 @@ async function signalResponse(
 
     reason:
       "send=1 not requested."
+
   };
 
 
@@ -4847,6 +7140,7 @@ async function signalResponse(
         env,
         signal
       );
+
   }
 
 
@@ -4859,10 +7153,15 @@ async function signalResponse(
     telegram,
 
     cache:
-      getTwelveDataCacheStatus()
+      getTwelveDataCacheStatus(),
+
+    signal_freshness:
+      signalDataFresh()
 
   });
+
 }
+
 
 
 // ============================================================
@@ -4872,7 +7171,11 @@ async function signalResponse(
 function renderHomepage() {
 
   return `<!DOCTYPE html>
-<html lang="fa" dir="rtl">
+
+<html
+lang="fa"
+dir="rtl"
+>
 
 <head>
 
@@ -4963,7 +7266,9 @@ onclick="loadSignal()"
 
 <div class="card">
 
-<pre id="output">
+<pre
+id="output"
+>
 در حال دریافت اطلاعات...
 </pre>
 
@@ -5013,13 +7318,22 @@ if(
 d.signal === "WAIT"
 ){
 
-out.textContent = [
+const lines = [
 
 "⏸ WAIT",
 
 "Score: " +
 (d.score ?? "-") +
 "/100",
+
+"BUY: " +
+(d.buyScore ?? "-"),
+
+"SELL: " +
+(d.sellScore ?? "-"),
+
+"Lead: " +
+(d.directionLead ?? "-"),
 
 "Price: " +
 (d.price ?? "-"),
@@ -5043,7 +7357,43 @@ out.textContent = [
 
 d.reason || ""
 
-].join("\\n");
+];
+
+
+if(
+Array.isArray(
+d.scoreBreakdown
+)
+){
+
+lines.push(
+"",
+"Score Breakdown:"
+);
+
+for(
+const x of
+d.scoreBreakdown
+){
+
+lines.push(
+(x.passed ? "✅ " : "❌ ") +
+x.name +
+": " +
+x.score +
+"/" +
+x.max
+);
+
+}
+
+}
+
+
+out.textContent =
+lines.join(
+"\\n"
+);
 
 
 }else{
@@ -5067,6 +7417,7 @@ e.message;
 
 }
 
+
 loadSignal();
 
 setInterval(
@@ -5077,8 +7428,11 @@ loadSignal,
 </script>
 
 </body>
+
 </html>`;
+
 }
+
 
 
 // ============================================================
@@ -5118,6 +7472,7 @@ function withCors(
     response.body,
 
     {
+
       status:
         response.status,
 
@@ -5125,10 +7480,13 @@ function withCors(
         response.statusText,
 
       headers
+
     }
 
   );
+
 }
+
 
 
 // ============================================================
@@ -5152,6 +7510,7 @@ export default {
       url.pathname;
 
 
+
     // --------------------------------------------------------
     // OPTIONS
     // --------------------------------------------------------
@@ -5171,7 +7530,9 @@ export default {
         )
 
       );
+
     }
+
 
 
     try {
@@ -5187,18 +7548,26 @@ export default {
         return withCors(
 
           new Response(
+
             renderHomepage(),
 
             {
+
               headers: {
+
                 "content-type":
                   "text/html; charset=UTF-8"
+
               }
+
             }
+
           )
 
         );
+
       }
+
 
 
       // ------------------------------------------------------
@@ -5210,11 +7579,15 @@ export default {
       ) {
 
         return withCors(
+
           await healthResponse(
             env
           )
+
         );
+
       }
+
 
 
       // ------------------------------------------------------
@@ -5232,7 +7605,9 @@ export default {
           )
 
         );
+
       }
+
 
 
       // ------------------------------------------------------
@@ -5252,7 +7627,9 @@ export default {
           )
 
         );
+
       }
+
 
 
       // ------------------------------------------------------
@@ -5270,7 +7647,9 @@ export default {
           )
 
         );
+
       }
+
 
 
       // ------------------------------------------------------
@@ -5301,7 +7680,9 @@ export default {
 
               CONFIG.FOOTER
 
-            ].join("\n")
+            ].join(
+              "\n"
+            )
 
           );
 
@@ -5318,7 +7699,9 @@ export default {
           })
 
         );
+
       }
+
 
 
       // ------------------------------------------------------
@@ -5354,7 +7737,9 @@ export default {
           })
 
         );
+
       }
+
 
 
       // ------------------------------------------------------
@@ -5374,7 +7759,9 @@ export default {
           )
 
         );
+
       }
+
 
 
       // ------------------------------------------------------
@@ -5393,7 +7780,9 @@ export default {
           )
 
         );
+
       }
+
 
 
       // ------------------------------------------------------
@@ -5413,7 +7802,9 @@ export default {
           )
 
         );
+
       }
+
 
 
       // ------------------------------------------------------
@@ -5421,7 +7812,8 @@ export default {
       // ------------------------------------------------------
 
       if (
-        path === "/run-now"
+        path ===
+        "/run-now"
       ) {
 
         const result =
@@ -5441,7 +7833,9 @@ export default {
           })
 
         );
+
       }
+
 
 
       // ------------------------------------------------------
@@ -5453,6 +7847,7 @@ export default {
         jsonResponse(
 
           {
+
             ok: false,
 
             error:
@@ -5460,6 +7855,7 @@ export default {
 
             version:
               CONFIG.VERSION
+
           },
 
           404
@@ -5469,13 +7865,16 @@ export default {
       );
 
 
-    } catch (error) {
+    } catch (
+      error
+    ) {
 
       return withCors(
 
         jsonResponse(
 
           {
+
             ok: false,
 
             version:
@@ -5489,6 +7888,7 @@ export default {
 
             cache:
               getTwelveDataCacheStatus()
+
           },
 
           500
@@ -5496,8 +7896,11 @@ export default {
         )
 
       );
+
     }
+
   },
+
 
 
   // ========================================================
@@ -5511,12 +7914,15 @@ export default {
   ) {
 
     ctx.waitUntil(
+
       runScheduled(
         env
       ).catch(
         () => {}
       )
+
     );
+
   }
 
 };
