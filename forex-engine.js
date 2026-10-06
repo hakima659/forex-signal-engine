@@ -7,9 +7,9 @@
 //
 // V7.0.3:
 // - Fixed candle freshness detection
-// - Current 15M/1H candles are no longer falsely marked stale
-// - Interval-aware freshness validation
-// - Allows current candle + previous candle with API lag tolerance
+// - Current 15M candle is no longer treated as stale
+// - Current 1H candle is no longer treated as stale
+// - Allows current candle + one previous candle
 // - Relaxed but still quality-first signal filtering
 // - Strict 1H trend confirmation
 // - Flexible 15M confirmation
@@ -82,28 +82,25 @@ const CONFIG = {
   // ----------------------------------------------------------
   // DATA FRESHNESS
   //
-  // Important:
-  // We do NOT compare candle-open time directly against a
-  // tiny raw-age threshold.
+  // IMPORTANT:
+  // Candle datetime is the OPEN time of the candle.
+  // Therefore a current 15M candle can naturally be
+  // 0-15 minutes old, and a current 1H candle can
+  // naturally be 0-60 minutes old.
   //
-  // Example:
-  // A 15M candle opened at 16:30 is still the CURRENT candle
-  // at 16:41 and must NOT be called stale.
-  //
-  // Current candle is accepted.
-  // Previous candle is accepted only within one interval plus
-  // a reasonable provider/API delay tolerance.
+  // We now evaluate candle BUCKETS instead of treating
+  // the candle-open timestamp as the actual data age.
   // ----------------------------------------------------------
 
   FRESHNESS: {
     "15min": {
       intervalSeconds: 900,
-      maxDelaySeconds: 240
+      maxBucketLag: 1
     },
 
     "1h": {
       intervalSeconds: 3600,
-      maxDelaySeconds: 600
+      maxBucketLag: 1
     }
   },
 
@@ -193,7 +190,9 @@ function clamp(value, min, max) {
 }
 
 function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
+  return new Promise(
+    resolve => setTimeout(resolve, ms)
+  );
 }
 
 
@@ -201,27 +200,45 @@ function sleep(ms) {
 // RESPONSE HELPERS
 // ============================================================
 
-function jsonResponse(data, status = 200) {
+function jsonResponse(
+  data,
+  status = 200
+) {
   return new Response(
-    JSON.stringify(data, null, 2),
+    JSON.stringify(
+      data,
+      null,
+      2
+    ),
     {
       status,
+
       headers: {
-        "content-type": "application/json; charset=utf-8",
-        "cache-control": "no-store"
+        "content-type":
+          "application/json; charset=utf-8",
+
+        "cache-control":
+          "no-store"
       }
     }
   );
 }
 
-function textResponse(text, status = 200) {
+function textResponse(
+  text,
+  status = 200
+) {
   return new Response(
     String(text),
     {
       status,
+
       headers: {
-        "content-type": "text/plain; charset=utf-8",
-        "cache-control": "no-store"
+        "content-type":
+          "text/plain; charset=utf-8",
+
+        "cache-control":
+          "no-store"
       }
     }
   );
@@ -232,15 +249,22 @@ function textResponse(text, status = 200) {
 // ENVIRONMENT
 // ============================================================
 
-function getEnvValue(env, names) {
-  for (const name of names) {
+function getEnvValue(
+  env,
+  names
+) {
+  for (
+    const name of names
+  ) {
     if (
       env &&
       env[name] !== undefined &&
       env[name] !== null &&
       String(env[name]).trim() !== ""
     ) {
-      return String(env[name]).trim();
+      return String(
+        env[name]
+      ).trim();
     }
   }
 
@@ -248,26 +272,35 @@ function getEnvValue(env, names) {
 }
 
 function getTwelveDataKey(env) {
-  return getEnvValue(env, [
-    "TWELVE_DATA_API_KEY",
-    "TWELVEDATA_API_KEY",
-    "TWELVE_DATA_KEY"
-  ]);
+  return getEnvValue(
+    env,
+    [
+      "TWELVE_DATA_API_KEY",
+      "TWELVEDATA_API_KEY",
+      "TWELVE_DATA_KEY"
+    ]
+  );
 }
 
 function getTelegramToken(env) {
-  return getEnvValue(env, [
-    "TELEGRAM_BOT_TOKEN",
-    "TELEGRAM_TOKEN",
-    "BOT_TOKEN"
-  ]);
+  return getEnvValue(
+    env,
+    [
+      "TELEGRAM_BOT_TOKEN",
+      "TELEGRAM_TOKEN",
+      "BOT_TOKEN"
+    ]
+  );
 }
 
 function getTelegramChatId(env) {
-  return getEnvValue(env, [
-    "TELEGRAM_CHAT_ID",
-    "CHAT_ID"
-  ]);
+  return getEnvValue(
+    env,
+    [
+      "TELEGRAM_CHAT_ID",
+      "CHAT_ID"
+    ]
+  );
 }
 
 
@@ -337,8 +370,10 @@ async function telegramApi(
     if (!response.ok) {
       return {
         ok: false,
+
         httpStatus:
           response.status,
+
         telegram:
           data
       };
@@ -350,15 +385,16 @@ async function telegramApi(
     ) {
       return {
         ok: false,
-        telegram:
-          data
+        telegram: data
       };
     }
 
     return data;
+
   } catch (error) {
     return {
       ok: false,
+
       error:
         error instanceof Error
           ? error.message
@@ -377,10 +413,14 @@ async function sendTelegramToChat(
   text,
   options = {}
 ) {
-  if (!CONFIG.TELEGRAM_ENABLED) {
+  if (
+    !CONFIG.TELEGRAM_ENABLED
+  ) {
     return {
       ok: false,
+
       skipped: true,
+
       reason:
         "Telegram disabled"
     };
@@ -393,6 +433,7 @@ async function sendTelegramToChat(
   if (!chatId) {
     return {
       ok: false,
+
       error:
         "TELEGRAM_CHAT_ID is missing"
     };
@@ -454,7 +495,9 @@ async function twelveDataRequest(
 
   params.set(
     "outputsize",
-    String(CONFIG.OUTPUTSIZE)
+    String(
+      CONFIG.OUTPUTSIZE
+    )
   );
 
   params.set(
@@ -532,64 +575,12 @@ async function twelveDataRequest(
 
 
 // ============================================================
-// UTC DATETIME PARSER
-//
-// Twelve Data is requested in UTC.
-// This parser makes the timestamp handling explicit instead
-// of relying on runtime-specific parsing of "YYYY-MM-DD HH:mm:ss".
-// ============================================================
-
-function parseUtcTimestamp(value) {
-  const text =
-    String(value || "").trim();
-
-  if (!text) {
-    return 0;
-  }
-
-  // Already contains Z.
-  if (/Z$/i.test(text)) {
-    const ts =
-      Date.parse(text);
-
-    return Number.isFinite(ts)
-      ? ts
-      : 0;
-  }
-
-  // Already contains timezone offset.
-  if (
-    /[+-]\d{2}:\d{2}$/.test(text)
-  ) {
-    const ts =
-      Date.parse(text);
-
-    return Number.isFinite(ts)
-      ? ts
-      : 0;
-  }
-
-  // Twelve Data UTC format:
-  // YYYY-MM-DD HH:mm:ss
-  const normalized =
-    text.includes("T")
-      ? `${text}Z`
-      : `${text.replace(" ", "T")}Z`;
-
-  const ts =
-    Date.parse(normalized);
-
-  return Number.isFinite(ts)
-    ? ts
-    : 0;
-}
-
-
-// ============================================================
 // NORMALIZE CANDLES
 // ============================================================
 
-function normalizeCandles(values) {
+function normalizeCandles(
+  values
+) {
   return values
     .map(item => ({
       datetime:
@@ -598,34 +589,46 @@ function normalizeCandles(values) {
         ),
 
       open:
-        safeNumber(item.open),
+        safeNumber(
+          item.open
+        ),
 
       high:
-        safeNumber(item.high),
+        safeNumber(
+          item.high
+        ),
 
       low:
-        safeNumber(item.low),
+        safeNumber(
+          item.low
+        ),
 
       close:
-        safeNumber(item.close),
+        safeNumber(
+          item.close
+        ),
 
       volume:
-        safeNumber(item.volume)
+        safeNumber(
+          item.volume
+        )
     }))
+
     .filter(c =>
       c.open > 0 &&
       c.high > 0 &&
       c.low > 0 &&
       c.close > 0
     )
+
     .sort(
       (a, b) =>
-        parseUtcTimestamp(
+        new Date(
           a.datetime
-        ) -
-        parseUtcTimestamp(
+        ).getTime() -
+        new Date(
           b.datetime
-        )
+        ).getTime()
     );
 }
 
@@ -654,7 +657,9 @@ async function getCandles(
       : CONFIG.SLOW_CACHE_SECONDS * 1000;
 
   const cached =
-    MEMORY_CACHE[cacheKey];
+    MEMORY_CACHE[
+      cacheKey
+    ];
 
   const cachedAt =
     MEMORY_CACHE[
@@ -667,7 +672,8 @@ async function getCandles(
     !forceRefresh &&
     cached &&
     cachedAt &&
-    nowMs() - cachedAt <
+    nowMs() -
+      cachedAt <
       cacheAge
   ) {
     return cached;
@@ -693,7 +699,9 @@ async function getCandles(
       );
     }
 
-    MEMORY_CACHE[cacheKey] =
+    MEMORY_CACHE[
+      cacheKey
+    ] =
       candles;
 
     MEMORY_CACHE[
@@ -704,6 +712,7 @@ async function getCandles(
       nowMs();
 
     return candles;
+
   } catch (error) {
     if (
       cached &&
@@ -719,16 +728,42 @@ async function getCandles(
 
 // ============================================================
 // TIME / FRESHNESS
+//
+// IMPORTANT FIX V7.0.3
+//
+// Twelve Data gives the OPEN TIME of the candle.
+//
+// Example:
+//
+// 15M candle = 16:30
+// Current time = 16:45
+//
+// Raw age = 15 minutes
+// BUT the candle is still the current 15M bucket.
+//
+// Same for 1H:
+//
+// 1H candle = 16:00
+// Current time = 16:45
+//
+// Raw age = 45 minutes
+// BUT the candle is still the current 1H bucket.
+//
+// Therefore we compare candle BUCKETS rather than simply
+// comparing current time minus candle-open time.
 // ============================================================
 
-function candleTimestamp(candle) {
-  if (!candle) {
-    return 0;
-  }
+function candleTimestamp(
+  candle
+) {
+  const t =
+    new Date(
+      candle.datetime
+    ).getTime();
 
-  return parseUtcTimestamp(
-    candle.datetime
-  );
+  return Number.isFinite(t)
+    ? t
+    : 0;
 }
 
 function getDataAgeSeconds(
@@ -757,110 +792,142 @@ function getDataAgeSeconds(
 
   return Math.max(
     0,
-    (nowMs() - ts) / 1000
+    (
+      nowMs() -
+      ts
+    ) / 1000
   );
 }
 
-function getFreshnessPolicy(
+
+// ============================================================
+// PARSE CANDLE TIMESTAMP
+// ============================================================
+
+function parseCandleTimestamp(
+  timestamp
+) {
+  if (
+    timestamp === null ||
+    timestamp === undefined
+  ) {
+    return NaN;
+  }
+
+  let value =
+    String(
+      timestamp
+    ).trim();
+
+  if (!value) {
+    return NaN;
+  }
+
+  // Twelve Data normally returns:
+  // YYYY-MM-DD HH:mm:ss
+  //
+  // Convert it explicitly to UTC.
+  if (
+    value.includes(" ") &&
+    !value.includes("T")
+  ) {
+    value =
+      value.replace(
+        " ",
+        "T"
+      );
+  }
+
+  if (
+    !/[zZ]$/.test(value)
+  ) {
+    value += "Z";
+  }
+
+  const parsed =
+    Date.parse(value);
+
+  return Number.isFinite(parsed)
+    ? parsed
+    : NaN;
+}
+
+
+// ============================================================
+// INTERVAL SECONDS
+// ============================================================
+
+function getIntervalSeconds(
   interval
 ) {
-  const policy =
+  const config =
     CONFIG.FRESHNESS[
       interval
     ];
 
-  if (policy) {
-    return policy;
+  if (
+    config &&
+    Number.isFinite(
+      config.intervalSeconds
+    )
+  ) {
+    return config.intervalSeconds;
   }
 
-  return {
-    intervalSeconds:
-      interval === "1h"
-        ? 3600
-        : 900,
+  if (
+    interval === "1h"
+  ) {
+    return 3600;
+  }
 
-    maxDelaySeconds:
-      interval === "1h"
-        ? 600
-        : 240
-  };
+  return 900;
 }
 
+
+// ============================================================
+// CANDLE FRESHNESS
+// ============================================================
+
 function freshnessForCandle(
-  candles,
+  latestTimestamp,
   interval,
-  now = nowMs()
+  currentMs = nowMs()
 ) {
-  const policy =
-    getFreshnessPolicy(
+  const intervalSeconds =
+    getIntervalSeconds(
       interval
     );
 
+  const tsMs =
+    parseCandleTimestamp(
+      latestTimestamp
+    );
+
   if (
-    !candles ||
-    !candles.length
+    !Number.isFinite(tsMs)
   ) {
     return {
       ok: false,
 
-      interval,
-
-      intervalSeconds:
-        policy.intervalSeconds,
-
-      maxDelaySeconds:
-        policy.maxDelaySeconds,
+      reason:
+        "Invalid candle timestamp",
 
       ageSeconds:
-        Infinity,
+        null,
 
-      bucketLagSeconds:
-        Infinity,
+      bucketLag:
+        null,
 
-      reason:
-        "No candle data"
-    };
-  }
+      intervalSeconds,
 
-  const latest =
-    candles[
-      candles.length - 1
-    ];
-
-  const tsMs =
-    candleTimestamp(
-      latest
-    );
-
-  if (!tsMs) {
-    return {
-      ok: false,
-
-      interval,
-
-      intervalSeconds:
-        policy.intervalSeconds,
-
-      maxDelaySeconds:
-        policy.maxDelaySeconds,
-
-      ageSeconds:
-        Infinity,
-
-      bucketLagSeconds:
-        Infinity,
-
-      candleTimestamp:
-        latest.datetime,
-
-      reason:
-        "Invalid candle timestamp"
+      candleTime:
+        latestTimestamp || null
     };
   }
 
   const nowSeconds =
     Math.floor(
-      now / 1000
+      currentMs / 1000
     );
 
   const candleSeconds =
@@ -868,194 +935,65 @@ function freshnessForCandle(
       tsMs / 1000
     );
 
-  const intervalSeconds =
-    policy.intervalSeconds;
+  // Current market-time bucket.
+  //
+  // 15M:
+  // 16:30 -> bucket 16:30
+  // 16:45 -> bucket 16:45
+  //
+  // 1H:
+  // 16:00 -> bucket 16:00
+  // 16:45 -> bucket 16:00
 
-  const currentBucketStart =
+  const currentBucket =
     Math.floor(
       nowSeconds /
         intervalSeconds
     ) *
     intervalSeconds;
 
-  const candleBucketStart =
+  const candleBucket =
     Math.floor(
       candleSeconds /
         intervalSeconds
     ) *
     intervalSeconds;
 
-  const bucketLagSeconds =
-    currentBucketStart -
-    candleBucketStart;
+  const bucketLag =
+    Math.floor(
+      (
+        currentBucket -
+        candleBucket
+      ) /
+      intervalSeconds
+    );
 
   const ageSeconds =
-    nowSeconds -
-    candleSeconds;
+    Math.max(
+      0,
+      nowSeconds -
+      candleSeconds
+    );
 
-  // Timestamp from the future beyond tolerance:
-  // considered invalid.
-  if (
-    ageSeconds <
-    -policy.maxDelaySeconds
-  ) {
-    return {
-      ok: false,
+  const maxBucketLag =
+    CONFIG
+      .FRESHNESS[
+        interval
+      ]?.maxBucketLag ??
+    1;
 
-      interval,
-
-      intervalSeconds,
-
-      maxDelaySeconds:
-        policy.maxDelaySeconds,
-
-      ageSeconds:
-        round(
-          ageSeconds,
-          1
-        ),
-
-      bucketLagSeconds,
-
-      candleTimestamp:
-        latest.datetime,
-
-      currentBucketStart:
-        new Date(
-          currentBucketStart * 1000
-        ).toISOString(),
-
-      candleBucketStart:
-        new Date(
-          candleBucketStart * 1000
-        ).toISOString(),
-
-      reason:
-        "Candle timestamp is in the future"
-    };
-  }
-
-  // ----------------------------------------------------------
-  // CURRENT CANDLE
-  //
-  // This is the key fix.
-  //
-  // A candle in the current interval is considered fresh even
-  // though its opening timestamp may be many minutes old.
-  // ----------------------------------------------------------
-
-  if (
-    bucketLagSeconds === 0 &&
-    ageSeconds >= 0
-  ) {
-    return {
-      ok: true,
-
-      interval,
-
-      intervalSeconds,
-
-      maxDelaySeconds:
-        policy.maxDelaySeconds,
-
-      ageSeconds:
-        round(
-          ageSeconds,
-          1
-        ),
-
-      bucketLagSeconds: 0,
-
-      candleTimestamp:
-        latest.datetime,
-
-      currentBucketStart:
-        new Date(
-          currentBucketStart * 1000
-        ).toISOString(),
-
-      candleBucketStart:
-        new Date(
-          candleBucketStart * 1000
-        ).toISOString(),
-
-      status:
-        "current-candle",
-
-      reason:
-        "Current candle is valid"
-    };
-  }
-
-  // ----------------------------------------------------------
-  // PREVIOUS CANDLE
-  //
-  // One previous candle is acceptable only if the provider is
-  // delayed by no more than one full interval + API tolerance.
-  // ----------------------------------------------------------
-
-  const previousCandleAllowed =
-    bucketLagSeconds ===
-      intervalSeconds &&
-    ageSeconds <=
-      intervalSeconds +
-      policy.maxDelaySeconds;
-
-  if (
-    previousCandleAllowed
-  ) {
-    return {
-      ok: true,
-
-      interval,
-
-      intervalSeconds,
-
-      maxDelaySeconds:
-        policy.maxDelaySeconds,
-
-      ageSeconds:
-        round(
-          ageSeconds,
-          1
-        ),
-
-      bucketLagSeconds,
-
-      candleTimestamp:
-        latest.datetime,
-
-      currentBucketStart:
-        new Date(
-          currentBucketStart * 1000
-        ).toISOString(),
-
-      candleBucketStart:
-        new Date(
-          candleBucketStart * 1000
-        ).toISOString(),
-
-      status:
-        "previous-candle-within-tolerance",
-
-      reason:
-        "Previous candle is within allowed data delay"
-    };
-  }
-
-  // ----------------------------------------------------------
-  // STALE
-  // ----------------------------------------------------------
+  const ok =
+    bucketLag >= 0 &&
+    bucketLag <=
+      maxBucketLag;
 
   return {
-    ok: false,
+    ok,
 
-    interval,
-
-    intervalSeconds,
-
-    maxDelaySeconds:
-      policy.maxDelaySeconds,
+    reason:
+      ok
+        ? "Current or recent candle"
+        : "Candle bucket is stale",
 
     ageSeconds:
       round(
@@ -1063,128 +1001,106 @@ function freshnessForCandle(
         1
       ),
 
-    bucketLagSeconds,
+    bucketLag,
 
-    candleTimestamp:
-      latest.datetime,
+    intervalSeconds,
 
-    currentBucketStart:
+    maxBucketLag,
+
+    candleTime:
+      latestTimestamp,
+
+    candleBucket:
       new Date(
-        currentBucketStart * 1000
+        candleBucket * 1000
       ).toISOString(),
 
-    candleBucketStart:
+    currentBucket:
       new Date(
-        candleBucketStart * 1000
-      ).toISOString(),
-
-    status:
-      "stale",
-
-    reason:
-      `Latest ${interval} candle is too far behind current market interval`
+        currentBucket * 1000
+      ).toISOString()
   };
 }
+
+
+// ============================================================
+// FRESHNESS CHECK
+// ============================================================
 
 function freshnessCheck(
   fast,
   slow
 ) {
-  const fastFresh =
+  const fastLatest =
+    fast &&
+    fast.length
+      ? fast[
+          fast.length - 1
+        ]
+      : null;
+
+  const slowLatest =
+    slow &&
+    slow.length
+      ? slow[
+          slow.length - 1
+        ]
+      : null;
+
+  const fastFreshness =
     freshnessForCandle(
-      fast,
+      fastLatest?.datetime,
       CONFIG.INTERVAL_FAST
     );
 
-  const slowFresh =
+  const slowFreshness =
     freshnessForCandle(
-      slow,
+      slowLatest?.datetime,
       CONFIG.INTERVAL_SLOW
     );
 
-  let reason =
-    "Market data is fresh";
+  const fastRawAge =
+    getDataAgeSeconds(
+      fast
+    );
 
-  if (!fastFresh.ok) {
-    reason =
-      `15M data stale: ${fastFresh.reason}`;
-  } else if (!slowFresh.ok) {
-    reason =
-      `1H data stale: ${slowFresh.reason}`;
-  }
+  const slowRawAge =
+    getDataAgeSeconds(
+      slow
+    );
 
   return {
     ok:
-      fastFresh.ok &&
-      slowFresh.ok,
+      fastFreshness.ok &&
+      slowFreshness.ok,
 
     fastAgeSeconds:
-      fastFresh.ageSeconds,
+      round(
+        fastRawAge,
+        1
+      ),
 
     slowAgeSeconds:
-      slowFresh.ageSeconds,
+      round(
+        slowRawAge,
+        1
+      ),
 
     fastLimitSeconds:
-      getFreshnessPolicy(
+      CONFIG.FRESHNESS[
         CONFIG.INTERVAL_FAST
-      ).maxDelaySeconds,
+      ].intervalSeconds,
 
     slowLimitSeconds:
-      getFreshnessPolicy(
+      CONFIG.FRESHNESS[
         CONFIG.INTERVAL_SLOW
-      ).maxDelaySeconds,
+      ].intervalSeconds,
 
-    fastIntervalSeconds:
-      fastFresh.intervalSeconds,
+    fast:
+      fastFreshness,
 
-    slowIntervalSeconds:
-      slowFresh.intervalSeconds,
-
-    fastBucketLagSeconds:
-      fastFresh.bucketLagSeconds,
-
-    slowBucketLagSeconds:
-      slowFresh.bucketLagSeconds,
-
-    fastStatus:
-      fastFresh.status ||
-      "unknown",
-
-    slowStatus:
-      slowFresh.status ||
-      "unknown",
-
-    fastCandleTimestamp:
-      fastFresh.candleTimestamp ||
-      null,
-
-    slowCandleTimestamp:
-      slowFresh.candleTimestamp ||
-      null,
-
-    fastCurrentBucketStart:
-      fastFresh.currentBucketStart ||
-      null,
-
-    slowCurrentBucketStart:
-      slowFresh.currentBucketStart ||
-      null,
-
-    fastCandleBucketStart:
-      fastFresh.candleBucketStart ||
-      null,
-
-    slowCandleBucketStart:
-      slowFresh.candleBucketStart ||
-      null,
-
-    fastReason:
-      fastFresh.reason,
-
-    slowReason:
-      slowFresh.reason,
-
-    reason
+    slow:
+      slowFreshness
   };
 }
 
@@ -1201,6 +1117,7 @@ function sessionCheck(
   ) {
     return {
       ok: true,
+
       reason:
         "Session filter disabled"
     };
@@ -1214,10 +1131,14 @@ function sessionCheck(
 
   if (
     CONFIG.WEEKDAYS_ONLY &&
-    (day === 0 || day === 6)
+    (
+      day === 0 ||
+      day === 6
+    )
   ) {
     return {
       ok: false,
+
       reason:
         "Weekend"
     };
@@ -1286,7 +1207,8 @@ function sma(
     }
 
     if (
-      i >= period - 1
+      i >=
+      period - 1
     ) {
       result[i] =
         sum / period;
@@ -1330,7 +1252,9 @@ function ema(
   let previous =
     sum / period;
 
-  result[period - 1] =
+  result[
+    period - 1
+  ] =
     previous;
 
   const multiplier =
@@ -1387,7 +1311,9 @@ function trueRange(
       candles[i];
 
     const previous =
-      candles[i - 1];
+      candles[
+        i - 1
+      ];
 
     tr[i] =
       Math.max(
@@ -1396,12 +1322,12 @@ function trueRange(
 
         Math.abs(
           current.high -
-          previous.close
+            previous.close
         ),
 
         Math.abs(
           current.low -
-          previous.close
+            previous.close
         )
       );
   }
@@ -1419,7 +1345,9 @@ function atr(
   period = 14
 ) {
   const tr =
-    trueRange(candles);
+    trueRange(
+      candles
+    );
 
   const result =
     new Array(
@@ -1446,7 +1374,9 @@ function atr(
   let previous =
     sum / period;
 
-  result[period - 1] =
+  result[
+    period - 1
+  ] =
     previous;
 
   for (
@@ -1701,20 +1631,26 @@ function adx(
   ) {
     const upMove =
       candles[i].high -
-      candles[i - 1].high;
+      candles[
+        i - 1
+      ].high;
 
     const downMove =
-      candles[i - 1].low -
+      candles[
+        i - 1
+      ].low -
       candles[i].low;
 
     plusDM[i] =
-      upMove > downMove &&
+      upMove >
+        downMove &&
       upMove > 0
         ? upMove
         : 0;
 
     minusDM[i] =
-      downMove > upMove &&
+      downMove >
+        upMove &&
       downMove > 0
         ? downMove
         : 0;
@@ -1726,12 +1662,16 @@ function adx(
 
         Math.abs(
           candles[i].high -
-          candles[i - 1].close
+            candles[
+              i - 1
+            ].close
         ),
 
         Math.abs(
           candles[i].low -
-          candles[i - 1].close
+            candles[
+              i - 1
+            ].close
         )
       );
   }
@@ -1761,21 +1701,23 @@ function adx(
     i++
   ) {
     trSum += tr[i];
-
-    plusSum +=
-      plusDM[i];
-
-    minusSum +=
-      minusDM[i];
+    plusSum += plusDM[i];
+    minusSum += minusDM[i];
   }
 
-  smoothedTR[period] =
+  smoothedTR[
+    period
+  ] =
     trSum;
 
-  smoothedPlus[period] =
+  smoothedPlus[
+    period
+  ] =
     plusSum;
 
-  smoothedMinus[period] =
+  smoothedMinus[
+    period
+  ] =
     minusSum;
 
   for (
@@ -1784,21 +1726,30 @@ function adx(
     i++
   ) {
     smoothedTR[i] =
-      smoothedTR[i - 1] -
-      smoothedTR[i - 1] /
-        period +
+      smoothedTR[
+        i - 1
+      ] -
+      smoothedTR[
+        i - 1
+      ] / period +
       tr[i];
 
     smoothedPlus[i] =
-      smoothedPlus[i - 1] -
-      smoothedPlus[i - 1] /
-        period +
+      smoothedPlus[
+        i - 1
+      ] -
+      smoothedPlus[
+        i - 1
+      ] / period +
       plusDM[i];
 
     smoothedMinus[i] =
-      smoothedMinus[i - 1] -
-      smoothedMinus[i - 1] /
-        period +
+      smoothedMinus[
+        i - 1
+      ] -
+      smoothedMinus[
+        i - 1
+      ] / period +
       minusDM[i];
   }
 
@@ -1849,7 +1800,7 @@ function adx(
         100 *
         Math.abs(
           plusDI[i] -
-          minusDI[i]
+            minusDI[i]
         ) /
         denominator;
     }
@@ -1894,12 +1845,16 @@ function adx(
     i++
   ) {
     if (
-      adxValues[i - 1] !== null &&
+      adxValues[
+        i - 1
+      ] !== null &&
       dx[i] !== null
     ) {
       adxValues[i] =
         (
-          adxValues[i - 1] *
+          adxValues[
+            i - 1
+          ] *
             (period - 1) +
           dx[i]
         ) / period;
@@ -1948,7 +1903,7 @@ function candleFeatures(
   const body =
     Math.abs(
       c.close -
-      c.open
+        c.open
     );
 
   const upperWick =
@@ -1979,8 +1934,7 @@ function candleFeatures(
     range,
 
     bodyRatio:
-      body /
-      range,
+      body / range,
 
     upperWick,
 
@@ -2009,7 +1963,8 @@ function structureDirection(
 
   const recent =
     candles.slice(
-      n - lookback,
+      n -
+        lookback,
       n
     );
 
@@ -2030,8 +1985,7 @@ function structureDirection(
 
   const firstHalf =
     Math.floor(
-      lookback /
-      2
+      lookback / 2
     );
 
   const oldHigh =
@@ -2145,7 +2099,9 @@ function buildIndicators(
     );
 
   const macdValues =
-    macd(closes);
+    macd(
+      closes
+    );
 
   const adxValues =
     adx(
@@ -2160,7 +2116,8 @@ function buildIndicators(
     );
 
   const i =
-    candles.length - 1;
+    candles.length -
+    1;
 
   const previous =
     Math.max(
@@ -2184,37 +2141,49 @@ function buildIndicators(
     rsiValues[i];
 
   const previousRSI =
-    rsiValues[previous];
+    rsiValues[
+      previous
+    ];
 
   const currentATR =
     atrValues[i];
 
   const previousATR =
-    atrValues[previous];
+    atrValues[
+      previous
+    ];
 
   const currentMACD =
     macdValues.line[i];
 
   const previousMACD =
-    macdValues.line[previous];
+    macdValues.line[
+      previous
+    ];
 
   const currentSignal =
     macdValues.signal[i];
 
   const previousSignal =
-    macdValues.signal[previous];
+    macdValues.signal[
+      previous
+    ];
 
   const currentHistogram =
     macdValues.histogram[i];
 
   const previousHistogram =
-    macdValues.histogram[previous];
+    macdValues.histogram[
+      previous
+    ];
 
   const currentADX =
     adxValues.adx[i];
 
   const previousADX =
-    adxValues.adx[previous];
+    adxValues.adx[
+      previous
+    ];
 
   const currentPlusDI =
     adxValues.plusDI[i];
@@ -2223,10 +2192,14 @@ function buildIndicators(
     adxValues.minusDI[i];
 
   const previousPlusDI =
-    adxValues.plusDI[previous];
+    adxValues.plusDI[
+      previous
+    ];
 
   const previousMinusDI =
-    adxValues.minusDI[previous];
+    adxValues.minusDI[
+      previous
+    ];
 
   const structure =
     structureDirection(
@@ -2367,39 +2340,55 @@ function trendDirection(
 ) {
   if (
     !ind ||
-    !Number.isFinite(ind.ema20) ||
-    !Number.isFinite(ind.ema50) ||
-    !Number.isFinite(ind.ema100)
+    !Number.isFinite(
+      ind.ema20
+    ) ||
+    !Number.isFinite(
+      ind.ema50
+    ) ||
+    !Number.isFinite(
+      ind.ema100
+    )
   ) {
     return "NEUTRAL";
   }
 
   if (
-    ind.price > ind.ema20 &&
-    ind.ema20 > ind.ema50 &&
-    ind.ema50 > ind.ema100
+    ind.price >
+      ind.ema20 &&
+    ind.ema20 >
+      ind.ema50 &&
+    ind.ema50 >
+      ind.ema100
   ) {
     return "BUY";
   }
 
   if (
-    ind.price < ind.ema20 &&
-    ind.ema20 < ind.ema50 &&
-    ind.ema50 < ind.ema100
+    ind.price <
+      ind.ema20 &&
+    ind.ema20 <
+      ind.ema50 &&
+    ind.ema50 <
+      ind.ema100
   ) {
     return "SELL";
   }
 
   if (
-    ind.price > ind.ema20 &&
-    ind.ema20 > ind.ema50
+    ind.price >
+      ind.ema20 &&
+    ind.ema20 >
+      ind.ema50
   ) {
     return "BUY";
   }
 
   if (
-    ind.price < ind.ema20 &&
-    ind.ema20 < ind.ema50
+    ind.price <
+      ind.ema20 &&
+    ind.ema20 <
+      ind.ema50
   ) {
     return "SELL";
   }
@@ -2460,42 +2449,48 @@ function scoreDirection(
 
   if (
     isBuy &&
-    ind.price > ind.ema20
+    ind.price >
+      ind.ema20
   ) {
     trendScore += 8;
   }
 
   if (
     isSell &&
-    ind.price < ind.ema20
+    ind.price <
+      ind.ema20
   ) {
     trendScore += 8;
   }
 
   if (
     isBuy &&
-    ind.ema20 > ind.ema50
+    ind.ema20 >
+      ind.ema50
   ) {
     trendScore += 8;
   }
 
   if (
     isSell &&
-    ind.ema20 < ind.ema50
+    ind.ema20 <
+      ind.ema50
   ) {
     trendScore += 8;
   }
 
   if (
     isBuy &&
-    ind.ema50 > ind.ema100
+    ind.ema50 >
+      ind.ema100
   ) {
     trendScore += 8;
   }
 
   if (
     isSell &&
-    ind.ema50 < ind.ema100
+    ind.ema50 <
+      ind.ema100
   ) {
     trendScore += 8;
   }
@@ -2554,12 +2549,14 @@ function scoreDirection(
     diSpread >= 8
   ) {
     diScore = 14;
+
   } else if (
     isBuy &&
     diSpread >=
       CONFIG.MIN_DI_SPREAD
   ) {
     diScore = 10;
+
   } else if (
     isBuy &&
     diSpread > 0
@@ -2572,12 +2569,14 @@ function scoreDirection(
     diSpread <= -8
   ) {
     diScore = 14;
+
   } else if (
     isSell &&
     diSpread <=
       -CONFIG.MIN_DI_SPREAD
   ) {
     diScore = 10;
+
   } else if (
     isSell &&
     diSpread < 0
@@ -2604,6 +2603,7 @@ function scoreDirection(
     ind.macdHistogram > 0
   ) {
     macdScore = 12;
+
   } else if (
     isSell &&
     ind.macd <
@@ -2611,12 +2611,14 @@ function scoreDirection(
     ind.macdHistogram < 0
   ) {
     macdScore = 12;
+
   } else if (
     isBuy &&
     ind.macd >
       ind.macdSignal
   ) {
     macdScore = 8;
+
   } else if (
     isSell &&
     ind.macd <
@@ -2643,17 +2645,20 @@ function scoreDirection(
     ind.rsi <= 68
   ) {
     rsiScore = 8;
+
   } else if (
     isSell &&
     ind.rsi <= 48 &&
     ind.rsi >= 32
   ) {
     rsiScore = 8;
+
   } else if (
     isBuy &&
     ind.rsi > 50
   ) {
     rsiScore = 5;
+
   } else if (
     isSell &&
     ind.rsi < 50
@@ -2704,17 +2709,20 @@ function scoreDirection(
     ind.momentum >= 0.08
   ) {
     momentumScore = 8;
+
   } else if (
     isBuy &&
     ind.momentum >=
       CONFIG.MIN_MOMENTUM
   ) {
     momentumScore = 5;
+
   } else if (
     isSell &&
     ind.momentum <= -0.08
   ) {
     momentumScore = 8;
+
   } else if (
     isSell &&
     ind.momentum <=
@@ -2738,20 +2746,25 @@ function scoreDirection(
   if (
     isBuy &&
     ind.candle.bullish &&
-    ind.candle.bodyRatio >= 0.45
+    ind.candle.bodyRatio >=
+      0.45
   ) {
     candleScore = 6;
+
   } else if (
     isSell &&
     ind.candle.bearish &&
-    ind.candle.bodyRatio >= 0.45
+    ind.candle.bodyRatio >=
+      0.45
   ) {
     candleScore = 6;
+
   } else if (
     isBuy &&
     ind.candle.bullish
   ) {
     candleScore = 4;
+
   } else if (
     isSell &&
     ind.candle.bearish
@@ -2772,12 +2785,17 @@ function scoreDirection(
   let adxScore = 0;
 
   if (
-    Number.isFinite(ind.adx) &&
+    Number.isFinite(
+      ind.adx
+    ) &&
     ind.adx >= 28
   ) {
     adxScore = 5;
+
   } else if (
-    Number.isFinite(ind.adx) &&
+    Number.isFinite(
+      ind.adx
+    ) &&
     ind.adx >=
       CONFIG.MIN_ADX
   ) {
@@ -2797,12 +2815,17 @@ function scoreDirection(
   let adxSlopeScore = 0;
 
   if (
-    Number.isFinite(ind.adxSlope) &&
+    Number.isFinite(
+      ind.adxSlope
+    ) &&
     ind.adxSlope >= 0.5
   ) {
     adxSlopeScore = 3;
+
   } else if (
-    Number.isFinite(ind.adxSlope) &&
+    Number.isFinite(
+      ind.adxSlope
+    ) &&
     ind.adxSlope >=
       CONFIG.MIN_ADX_SLOPE
   ) {
@@ -2829,7 +2852,7 @@ function scoreDirection(
 // ============================================================
 // DIRECTION CHECK
 //
-// V7.0.2 logic preserved
+// V7.0.3
 //
 // 1H remains strict.
 // 15M needs enough confirmations,
@@ -2942,9 +2965,7 @@ function directionCheck(
   for (
     const check of checks
   ) {
-    if (
-      check.ok
-    ) {
+    if (check.ok) {
       confirmations++;
 
       reasons.push(
@@ -2962,8 +2983,7 @@ function directionCheck(
 
       confirmations,
 
-      minimumConfirmations:
-        4,
+      minimumConfirmations: 4,
 
       reasons
     };
@@ -3080,9 +3100,7 @@ function directionCheck(
   for (
     const check of fastChecks
   ) {
-    if (
-      check.ok
-    ) {
+    if (check.ok) {
       fastConfirmations++;
 
       reasons.push(
@@ -3157,10 +3175,7 @@ function directionCheck(
         reasons: [
           ...reasons,
 
-          `Anti-chase: price is ${round(
-            distanceATR,
-            2
-          )} ATR from EMA20`
+          `Anti-chase: price is ${round(distanceATR, 2)} ATR from EMA20`
         ]
       };
     }
@@ -3201,6 +3216,7 @@ function buildTradePlan(
   ) {
     return {
       ok: false,
+
       reason:
         "Invalid direction"
     };
@@ -3213,12 +3229,17 @@ function buildTradePlan(
     fast.atr;
 
   if (
-    !Number.isFinite(entry) ||
-    !Number.isFinite(atrValue) ||
+    !Number.isFinite(
+      entry
+    ) ||
+    !Number.isFinite(
+      atrValue
+    ) ||
     atrValue <= 0
   ) {
     return {
       ok: false,
+
       reason:
         "Invalid price or ATR"
     };
@@ -3283,6 +3304,7 @@ function buildTradePlan(
         structureLow -
           atrValue * 0.15
       );
+
   } else {
     stopLoss =
       Math.max(
@@ -3301,11 +3323,14 @@ function buildTradePlan(
     );
 
   if (
-    !Number.isFinite(risk) ||
+    !Number.isFinite(
+      risk
+    ) ||
     risk <= 0
   ) {
     return {
       ok: false,
+
       reason:
         "Invalid risk"
     };
@@ -3336,6 +3361,7 @@ function buildTradePlan(
     tp2 =
       entry +
       tp2Distance;
+
   } else {
     tp1 =
       entry -
@@ -3366,10 +3392,7 @@ function buildTradePlan(
       ok: false,
 
       reason:
-        `RR ${round(
-          rr1,
-          2
-        )} below minimum ${CONFIG.MIN_RR}`
+        `RR ${round(rr1, 2)} below minimum ${CONFIG.MIN_RR}`
     };
   }
 
@@ -3492,7 +3515,6 @@ function generateSignal(
       sellScore: 0,
 
       reason:
-        freshness.reason ||
         "Market data is stale",
 
       freshness,
@@ -3563,7 +3585,8 @@ function generateSignal(
     sell.total;
 
   const direction =
-    buyScore >= sellScore
+    buyScore >=
+      sellScore
       ? "BUY"
       : "SELL";
 
@@ -3847,7 +3870,9 @@ function fmt(
     return "-";
   }
 
-  return Number(value).toFixed(
+  return Number(
+    value
+  ).toFixed(
     digits
   );
 }
@@ -3961,16 +3986,20 @@ function formatWaitStatusMessage(
   signal
 ) {
   const f =
-    signal.fast || {};
+    signal.fast ||
+    {};
 
   const s =
-    signal.slow || {};
+    signal.slow ||
+    {};
 
   const session =
-    signal.session || {};
+    signal.session ||
+    {};
 
   const freshness =
-    signal.freshness || {};
+    signal.freshness ||
+    {};
 
   return [
     `💎 HAKIM GOLD SIGNALS ${CONFIG.VERSION}`,
@@ -4021,11 +4050,7 @@ function formatWaitStatusMessage(
 
     `📡 Data 15M: ${freshness.fastAgeSeconds ?? "-"}s`,
 
-    `📡 15M Bucket Lag: ${freshness.fastBucketLagSeconds ?? "-"}s`,
-
     `📡 Data 1H: ${freshness.slowAgeSeconds ?? "-"}s`,
-
-    `📡 1H Bucket Lag: ${freshness.slowBucketLagSeconds ?? "-"}s`,
 
     `🕒 Session: ${session.reason || "-"}`,
 
@@ -4056,6 +4081,7 @@ async function getNews(
   // Intentionally conservative.
   // The signal engine must continue working even if
   // a news provider is unavailable.
+
   return [];
 }
 
@@ -4085,7 +4111,9 @@ function formatNewsMessage(
     );
   }
 
-  return lines.join("\n");
+  return lines.join(
+    "\n"
+  );
 }
 
 
@@ -4116,6 +4144,7 @@ async function getLastSignal(
     return JSON.parse(
       raw
     );
+
   } catch {
     return null;
   }
@@ -4163,6 +4192,7 @@ async function saveLastSignal(
     );
 
     return true;
+
   } catch {
     return false;
   }
@@ -4230,6 +4260,7 @@ async function maybeSendSignal(
   ) {
     return {
       sent: false,
+
       reason:
         "Telegram disabled"
     };
@@ -4354,19 +4385,24 @@ async function runEngine(
     nowMs();
 
   const forceRefresh =
-    options.forceRefresh === true;
+    options.forceRefresh ===
+    true;
 
   const fast =
     await getCandles(
       env,
+
       CONFIG.INTERVAL_FAST,
+
       forceRefresh
     );
 
   const slow =
     await getCandles(
       env,
+
       CONFIG.INTERVAL_SLOW,
+
       forceRefresh
     );
 
@@ -4380,7 +4416,8 @@ async function runEngine(
     null;
 
   if (
-    options.sendTelegram !== false
+    options.sendTelegram !==
+    false
   ) {
     telegram =
       await maybeSendSignal(
@@ -4439,19 +4476,12 @@ async function telegramTest(
 
       [
         `✅ HAKIM GOLD SIGNALS`,
-
         ``,
-
         `Telegram connection test`,
-
         ``,
-
         `Version: ${CONFIG.VERSION}`,
-
         `Symbol: ${CONFIG.SYMBOL}`,
-
         ``,
-
         `Time: ${nowIso()}`
       ].join("\n")
     );
@@ -4562,9 +4592,7 @@ async function telegramSetWebhook(
   const result =
     await telegramApi(
       env,
-
       "setWebhook",
-
       {
         url:
           webhookUrl
@@ -4596,6 +4624,7 @@ async function handleTelegramWebhook(
   try {
     update =
       await request.json();
+
   } catch {
     return jsonResponse(
       {
@@ -4604,6 +4633,7 @@ async function handleTelegramWebhook(
         error:
           "Invalid JSON"
       },
+
       400
     );
   }
@@ -4639,19 +4669,12 @@ async function handleTelegramWebhook(
 
           [
             `💎 HAKIM GOLD SIGNALS`,
-
             ``,
-
             `ربات فعال است.`,
-
             ``,
-
             `نسخه: ${CONFIG.VERSION}`,
-
             `نماد: ${CONFIG.SYMBOL}`,
-
             ``,
-
             `برای بررسی وضعیت از /status استفاده کنید.`
           ].join("\n"),
 
@@ -4670,17 +4693,11 @@ async function handleTelegramWebhook(
 
           [
             `💎 HAKIM GOLD SIGNALS`,
-
             ``,
-
             `🟢 Worker فعال است.`,
-
             `Version: ${CONFIG.VERSION}`,
-
             `Symbol: ${CONFIG.SYMBOL}`,
-
             ``,
-
             `Time: ${nowIso()}`
           ].join("\n"),
 
@@ -4779,7 +4796,6 @@ async function handleRequest(
       const result =
         await runEngine(
           env,
-
           {
             forceRefresh:
               url.searchParams.get(
@@ -4796,6 +4812,7 @@ async function handleRequest(
       return jsonResponse(
         result
       );
+
     } catch (error) {
       return jsonResponse(
         {
@@ -4835,7 +4852,6 @@ async function handleRequest(
       const result =
         await runEngine(
           env,
-
           {
             forceRefresh:
               true,
@@ -4848,6 +4864,7 @@ async function handleRequest(
       return jsonResponse(
         result
       );
+
     } catch (error) {
       return jsonResponse(
         {
@@ -5082,7 +5099,6 @@ async function scheduled(
   const job =
     runEngine(
       env,
-
       {
         forceRefresh:
           true,
@@ -5091,18 +5107,19 @@ async function scheduled(
           true
       }
     )
-    .then(
-      result => {
-        console.log(
-          "FOREX ENGINE RESULT:",
-          JSON.stringify(
-            result
-          )
-        );
 
-        return result;
-      }
-    )
+    .then(result => {
+      console.log(
+        "FOREX ENGINE RESULT:",
+
+        JSON.stringify(
+          result
+        )
+      );
+
+      return result;
+    })
+
     .catch(
       async error => {
         const message =
@@ -5122,22 +5139,16 @@ async function scheduled(
 
             [
               `🚨 FOREX ENGINE ERROR`,
-
               ``,
-
               `Version: ${CONFIG.VERSION}`,
-
               `Symbol: ${CONFIG.SYMBOL}`,
-
               ``,
-
               message,
-
               ``,
-
               nowIso()
             ].join("\n")
           );
+
         } catch (
           telegramError
         ) {
@@ -5149,6 +5160,7 @@ async function scheduled(
 
         return {
           ok: false,
+
           error:
             message
         };
@@ -5177,6 +5189,7 @@ export default {
         env,
         ctx
       );
+
     } catch (error) {
       console.error(
         "FETCH ERROR:",
