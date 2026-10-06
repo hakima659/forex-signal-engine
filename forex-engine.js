@@ -1,11 +1,11 @@
 // ============================================================
-// FOREX SIGNAL ENGINE V7.0.0 — GOLD QUALITY
+// FOREX SIGNAL ENGINE V7.0.1 — GOLD QUALITY
 // Cloudflare Worker + Twelve Data + Telegram
 //
 // PRIMARY: XAU/USD
 // TIMEFRAMES: 15M + 1H
 //
-// V7.0.0:
+// V7.0.1:
 // - Strict multi-timeframe confluence
 // - Fixed 100-point score model
 // - Detailed score breakdown
@@ -29,6 +29,8 @@
 // - Cron signal/news support
 // - DIRECT /test-price endpoint
 // - FIX: candles ordered oldest -> newest
+// - FIX: Cron errors are no longer silently swallowed
+// - FIX: Cron execution logs result + Telegram status
 //
 // Cloudflare secrets/vars:
 // TWELVE_DATA_API_KEY
@@ -43,7 +45,7 @@
 
 const CONFIG = {
 
-  VERSION: "V7.0.0",
+  VERSION: "V7.0.1",
 
   SYMBOL: "XAU/USD",
 
@@ -373,6 +375,7 @@ function clamp(
     ),
     max
   );
+
 }
 
 
@@ -423,19 +426,28 @@ function jsonResponse(
 ) {
 
   return new Response(
+
     JSON.stringify(
       data,
       null,
       2
     ),
+
     {
+
       status,
+
       headers: {
+
         "content-type":
           "application/json; charset=UTF-8",
+
         ...extraHeaders
+
       }
+
     }
+
   );
 
 }
@@ -454,8 +466,11 @@ async function alreadySent(
   if (
     !env?.KV
   ) {
+
     return false;
+
   }
+
 
   try {
 
@@ -487,18 +502,27 @@ async function markSent(
   if (
     !env?.KV
   ) {
+
     return;
+
   }
+
 
   try {
 
     await env.KV.put(
+
       key,
+
       "1",
+
       {
+
         expirationTtl:
           ttlSeconds
+
       }
+
     );
 
   } catch {}
@@ -523,20 +547,24 @@ function twelveDataUrl(
       "TWELVE_DATA_API_KEY"
     );
 
+
   const url =
     new URL(
       "https://api.twelvedata.com/time_series"
     );
+
 
   url.searchParams.set(
     "symbol",
     CONFIG.SYMBOL
   );
 
+
   url.searchParams.set(
     "interval",
     interval
   );
+
 
   url.searchParams.set(
     "outputsize",
@@ -545,20 +573,24 @@ function twelveDataUrl(
     )
   );
 
+
   url.searchParams.set(
     "apikey",
     apiKey
   );
+
 
   url.searchParams.set(
     "format",
     "JSON"
   );
 
+
   url.searchParams.set(
     "order",
     "DESC"
   );
+
 
   return url;
 
@@ -596,8 +628,10 @@ function parseTwelveDataValues(
   ) {
 
     throw new Error(
+
       json?.message ||
       "Twelve Data returned insufficient candle data."
+
     );
 
   }
@@ -698,17 +732,23 @@ async function getTimeSeries(
       interval
     );
 
+
   const cache =
     memory.candles[key];
+
 
   const now =
     Date.now();
 
+
   const ttl =
     interval ===
     CONFIG.INTERVAL_FAST
+
       ? CONFIG.FAST_CACHE_TTL_MS
+
       : CONFIG.SLOW_CACHE_TTL_MS;
+
 
 
   // ----------------------------------------------------------
@@ -725,6 +765,7 @@ async function getTimeSeries(
     return cache.data;
 
   }
+
 
 
   // ----------------------------------------------------------
@@ -750,18 +791,23 @@ async function getTimeSeries(
 
     const wait =
       Math.ceil(
+
         (
           memory.rateLimitUntil -
           now
         ) / 1000
+
       );
 
 
     throw new Error(
+
       `Twelve Data rate limit active. Retry in ${wait}s.`
+
     );
 
   }
+
 
 
   // ----------------------------------------------------------
@@ -819,7 +865,9 @@ async function getTimeSeries(
         const outputsize =
           interval ===
           CONFIG.INTERVAL_FAST
+
             ? CONFIG.OUTPUT_SIZE_FAST
+
             : CONFIG.OUTPUT_SIZE_SLOW;
 
 
@@ -833,13 +881,20 @@ async function getTimeSeries(
 
         const response =
           await fetchWithTimeout(
+
             url,
+
             {
+
               headers: {
+
                 accept:
                   "application/json"
+
               }
+
             }
+
           );
 
 
@@ -869,6 +924,7 @@ async function getTimeSeries(
           creditsLeft;
 
 
+
         // ----------------------------------------------------
         // HTTP 429
         // ----------------------------------------------------
@@ -887,7 +943,9 @@ async function getTimeSeries(
           if (
             retrySeconds < 1
           ) {
+
             retrySeconds = 65;
+
           }
 
 
@@ -928,6 +986,7 @@ async function getTimeSeries(
         }
 
 
+
         const text =
           await response.text();
 
@@ -945,10 +1004,13 @@ async function getTimeSeries(
         } catch {
 
           throw new Error(
+
             `Twelve Data invalid JSON (HTTP ${response.status}).`
+
           );
 
         }
+
 
 
         // ----------------------------------------------------
@@ -988,6 +1050,7 @@ async function getTimeSeries(
         }
 
 
+
         // ----------------------------------------------------
         // API ERROR
         // ----------------------------------------------------
@@ -1023,6 +1086,7 @@ async function getTimeSeries(
           );
 
         }
+
 
 
         // ----------------------------------------------------
@@ -1122,37 +1186,50 @@ function getTwelveDataCacheStatus() {
           cache.data
         ),
 
+
       age_seconds:
+
         cache.data
 
           ? Math.max(
+
               0,
+
               Math.floor(
+
                 (
                   now -
                   cache.fetchedAt
                 ) / 1000
+
               )
+
             )
 
           : null,
 
 
       fresh:
+
         Boolean(
+
           cache.data &&
           now -
             cache.fetchedAt <
             ttl
+
         ),
 
 
       stale_usable:
+
         Boolean(
+
           cache.data &&
           now -
             cache.fetchedAt <=
             CONFIG.STALE_MAX_MS
+
         ),
 
 
@@ -1185,10 +1262,12 @@ function getTwelveDataCacheStatus() {
       memory.rateLimitUntil
 
         ? Math.ceil(
+
             (
               memory.rateLimitUntil -
               now
             ) / 1000
+
           )
 
         : 0,
@@ -1440,9 +1519,11 @@ function rsi(
 
 
   return (
+
     100 -
     100 /
       (1 + rs)
+
   );
 
 }
@@ -1682,9 +1763,12 @@ function macd(
     previousHistogram,
 
     histogramSlope:
+
       previousHistogram !== null
+
         ? histogram -
           previousHistogram
+
         : null
 
   };
@@ -2090,11 +2174,13 @@ function momentum(
 
 
   return (
+
     (
       current -
       old
     ) /
     old
+
   );
 
 }
@@ -2680,7 +2766,9 @@ function parseNewsTimestamp(
     if (
       !value
     ) {
+
       continue;
+
     }
 
 
@@ -2844,10 +2932,14 @@ async function getLiveNews(
         "https://nfs.faireconomy.media/ff_calendar_thisweek.json",
 
         {
+
           headers: {
+
             accept:
               "application/json"
+
           }
+
         },
 
         10_000
@@ -3113,8 +3205,10 @@ function calculateScore(
     12,
 
     direction === "BUY"
+
       ? fast.trend ===
         "BULLISH"
+
       : fast.trend ===
         "BEARISH",
 
@@ -3130,8 +3224,10 @@ function calculateScore(
     12,
 
     direction === "BUY"
+
       ? slow.trend ===
         "BULLISH"
+
       : slow.trend ===
         "BEARISH",
 
@@ -3152,8 +3248,10 @@ function calculateScore(
     8,
 
     direction === "BUY"
+
       ? fast.structure ===
         "BULLISH"
+
       : fast.structure ===
         "BEARISH",
 
@@ -3169,8 +3267,10 @@ function calculateScore(
     8,
 
     direction === "BUY"
+
       ? slow.structure ===
         "BULLISH"
+
       : slow.structure ===
         "BEARISH",
 
@@ -3526,15 +3626,23 @@ function calculateScore(
   return {
 
     score:
+
       Math.max(
+
         0,
+
         Math.min(
+
           100,
+
           Math.round(
             score
           )
+
         )
+
       ),
+
 
     breakdown
 
@@ -3604,15 +3712,19 @@ function signalDataFresh() {
 
   const fastAge =
     fast.data
+
       ? now -
         fast.fetchedAt
+
       : Infinity;
 
 
   const slowAge =
     slow.data
+
       ? now -
         slow.fetchedAt
+
       : Infinity;
 
 
@@ -3621,12 +3733,16 @@ function signalDataFresh() {
     ok:
 
       Boolean(
+
         fast.data &&
         slow.data &&
+
         fastAge <=
           CONFIG.MAX_SIGNAL_FAST_AGE_MS &&
+
         slowAge <=
           CONFIG.MAX_SIGNAL_SLOW_AGE_MS
+
       ),
 
 
@@ -4204,6 +4320,7 @@ function buildTradePlan(
   let sl;
 
 
+
   // ----------------------------------------------------------
   // BUY
   // ----------------------------------------------------------
@@ -4280,6 +4397,7 @@ function buildTradePlan(
       );
 
   }
+
 
 
   // ----------------------------------------------------------
@@ -4395,6 +4513,7 @@ function buildTradePlan(
   }
 
 
+
   // ----------------------------------------------------------
   // ENTRY DISTANCE
   // ----------------------------------------------------------
@@ -4480,9 +4599,6 @@ function buildTradePlan(
 
   // ----------------------------------------------------------
   // ROOM CHECK
-  //
-  // We do not want TP1 immediately inside
-  // a nearby major recent level.
   // ----------------------------------------------------------
 
   const minimumRoom =
@@ -4571,13 +4687,7 @@ function buildTradePlan(
 
 
   // ----------------------------------------------------------
-  // EARLY EXIT PRICE
-  //
-  // This is NOT the hard SL.
-  // It is a softer invalidation line.
-  //
-  // The later EA should combine this with
-  // indicator reversal confirmation.
+  // EARLY EXIT
   // ----------------------------------------------------------
 
   const earlyExitLevel =
@@ -4681,85 +4791,81 @@ function buildTradePlan(
       ),
 
 
-    structure:
+    structure: {
 
-      {
+      support:
+        round(
+          levels.support,
+          2
+        ),
 
-        support:
-          round(
-            levels.support,
-            2
-          ),
+      resistance:
+        round(
+          levels.resistance,
+          2
+        )
 
-        resistance:
-          round(
-            levels.resistance,
-            2
-          )
-
-      },
+    },
 
 
-    management:
+    management: {
 
-      {
-
-        pendingExpiryMinutes:
-          CONFIG.PENDING_EXPIRY_MINUTES,
+      pendingExpiryMinutes:
+        CONFIG.PENDING_EXPIRY_MINUTES,
 
 
-        breakEvenAtR:
-          CONFIG.BREAK_EVEN_AT_R,
+      breakEvenAtR:
+        CONFIG.BREAK_EVEN_AT_R,
 
 
-        breakEvenTrigger:
-          round(
-            breakEvenTrigger,
-            2
-          ),
+      breakEvenTrigger:
+        round(
+          breakEvenTrigger,
+          2
+        ),
 
 
-        breakEvenStop:
-          round(
-            breakEvenStop,
-            2
-          ),
+      breakEvenStop:
+        round(
+          breakEvenStop,
+          2
+        ),
 
 
-        trailStartR:
-          CONFIG.TRAIL_START_R,
+      trailStartR:
+        CONFIG.TRAIL_START_R,
 
 
-        trailStart:
-          round(
-            trailStart,
-            2
-          ),
+      trailStart:
+        round(
+          trailStart,
+          2
+        ),
 
 
-        trailAtrMultiplier:
-          CONFIG.TRAIL_ATR_MULTIPLIER,
+      trailAtrMultiplier:
+        CONFIG.TRAIL_ATR_MULTIPLIER,
 
 
-        tp1ClosePercent:
-          CONFIG.TP1_CLOSE_PERCENT,
+      tp1ClosePercent:
+        CONFIG.TP1_CLOSE_PERCENT,
 
 
-        tp2ClosePercent:
-          CONFIG.TP2_CLOSE_PERCENT,
+      tp2ClosePercent:
+        CONFIG.TP2_CLOSE_PERCENT,
 
 
-        tp3ClosePercent:
-          CONFIG.TP3_CLOSE_PERCENT,
+      tp3ClosePercent:
+        CONFIG.TP3_CLOSE_PERCENT,
 
 
-        earlyExitLevel:
-          round(
-            earlyExitLevel,
-            2
-          )
+      earlyExitLevel:
+        round(
+          earlyExitLevel,
+          2
+        )
 
-      }
+    }
 
   };
 
@@ -4769,13 +4875,6 @@ function buildTradePlan(
 
 // ============================================================
 // EARLY EXIT LOGIC
-// ============================================================
-//
-// Used later by MT5 EA after a position is open.
-//
-// The idea is NOT to close on one noisy indicator.
-// At least two reversal confirmations are required.
-//
 // ============================================================
 
 function evaluateEarlyExit(
@@ -5394,10 +5493,12 @@ async function generateSignal(
     return waitResponse(
 
       check.reasons
+
         .slice(
           0,
           5
         )
+
         .join(
           " | "
         ),
@@ -5546,38 +5647,36 @@ async function generateSignal(
       plan,
 
 
-    management:
+    management: {
 
-      {
+      pendingExpiryMinutes:
+        CONFIG.PENDING_EXPIRY_MINUTES,
 
-        pendingExpiryMinutes:
-          CONFIG.PENDING_EXPIRY_MINUTES,
+      breakEvenAtR:
+        CONFIG.BREAK_EVEN_AT_R,
 
-        breakEvenAtR:
-          CONFIG.BREAK_EVEN_AT_R,
+      breakEvenPlusR:
+        CONFIG.BREAK_EVEN_PLUS_R,
 
-        breakEvenPlusR:
-          CONFIG.BREAK_EVEN_PLUS_R,
+      trailStartR:
+        CONFIG.TRAIL_START_R,
 
-        trailStartR:
-          CONFIG.TRAIL_START_R,
+      trailAtrMultiplier:
+        CONFIG.TRAIL_ATR_MULTIPLIER,
 
-        trailAtrMultiplier:
-          CONFIG.TRAIL_ATR_MULTIPLIER,
+      tp1ClosePercent:
+        CONFIG.TP1_CLOSE_PERCENT,
 
-        tp1ClosePercent:
-          CONFIG.TP1_CLOSE_PERCENT,
+      tp2ClosePercent:
+        CONFIG.TP2_CLOSE_PERCENT,
 
-        tp2ClosePercent:
-          CONFIG.TP2_CLOSE_PERCENT,
+      tp3ClosePercent:
+        CONFIG.TP3_CLOSE_PERCENT,
 
-        tp3ClosePercent:
-          CONFIG.TP3_CLOSE_PERCENT,
+      earlyExitConfirmations:
+        CONFIG.EARLY_EXIT_MIN_CONFIRMATIONS
 
-        earlyExitConfirmations:
-          CONFIG.EARLY_EXIT_MIN_CONFIRMATIONS
-
-      },
+    },
 
 
     timestamp:
@@ -5737,6 +5836,31 @@ async function sendTelegramToChat(
   text
 ) {
 
+  if (
+    chatId === null ||
+    chatId === undefined ||
+    String(chatId).trim() === ""
+  ) {
+
+    throw new Error(
+      "Telegram chat_id is empty."
+    );
+
+  }
+
+
+  if (
+    !text ||
+    String(text).trim() === ""
+  ) {
+
+    throw new Error(
+      "Telegram message is empty."
+    );
+
+  }
+
+
   return telegramApi(
 
     env,
@@ -5746,9 +5870,10 @@ async function sendTelegramToChat(
     {
 
       chat_id:
-        chatId,
+        String(chatId),
 
-      text,
+      text:
+        String(text),
 
       disable_web_page_preview:
         true
@@ -5917,6 +6042,7 @@ function formatWaitMessage(
   ];
 
 
+
   // ----------------------------------------------------------
   // SCORE BREAKDOWN SUMMARY
   // ----------------------------------------------------------
@@ -5977,7 +6103,14 @@ async function sendNewsAlert(
     !CONFIG.TELEGRAM_SEND_NEWS
   ) {
 
-    return;
+    return {
+
+      sent: false,
+
+      reason:
+        "Telegram news sending disabled."
+
+    };
 
   }
 
@@ -5993,7 +6126,14 @@ async function sendNewsAlert(
     )
   ) {
 
-    return;
+    return {
+
+      sent: false,
+
+      reason:
+        "Duplicate news blocked."
+
+    };
 
   }
 
@@ -6034,21 +6174,27 @@ async function sendNewsAlert(
     );
 
 
-  try {
-
-    await sendTelegram(
-      env,
-      message
-    );
+  await sendTelegram(
+    env,
+    message
+  );
 
 
-    await markSent(
-      env,
-      id,
-      CONFIG.NEWS_DEDUPE_SECONDS
-    );
+  await markSent(
+    env,
+    id,
+    CONFIG.NEWS_DEDUPE_SECONDS
+  );
 
-  } catch {}
+
+  return {
+
+    sent: true,
+
+    reason:
+      "News alert sent."
+
+  };
 
 }
 
@@ -6081,6 +6227,22 @@ async function maybeSendSignal(
 
 
   if (
+    !signal
+  ) {
+
+    return {
+
+      sent: false,
+
+      reason:
+        "Signal result is empty."
+
+    };
+
+  }
+
+
+  if (
     signal.signal ===
     "WAIT"
   ) {
@@ -6097,8 +6259,47 @@ async function maybeSendSignal(
   }
 
 
+  if (
+    signal.signal !== "BUY" &&
+    signal.signal !== "SELL"
+  ) {
+
+    return {
+
+      sent: false,
+
+      reason:
+        `Unsupported signal: ${signal.signal}`
+
+    };
+
+  }
+
+
   const t =
     signal.trade;
+
+
+  if (
+    !t ||
+    !Number.isFinite(
+      Number(t.entry)
+    ) ||
+    !Number.isFinite(
+      Number(t.sl)
+    )
+  ) {
+
+    return {
+
+      sent: false,
+
+      reason:
+        "Signal has no valid trade plan."
+
+    };
+
+  }
 
 
   const key =
@@ -6179,6 +6380,10 @@ async function runScheduled(
   env
 ) {
 
+  const startedAt =
+    Date.now();
+
+
   const newsEvents =
     await getLiveNews(
       env
@@ -6189,6 +6394,16 @@ async function runScheduled(
     newsState(
       newsEvents
     );
+
+
+  let newsAlert = {
+
+    sent: false,
+
+    reason:
+      "No upcoming news alert."
+
+  };
 
 
   if (
@@ -6208,10 +6423,11 @@ async function runScheduled(
         CONFIG.NEWS_ALERT_MINUTES
     ) {
 
-      await sendNewsAlert(
-        env,
-        state.upcoming
-      );
+      newsAlert =
+        await sendNewsAlert(
+          env,
+          state.upcoming
+        );
 
     }
 
@@ -6238,8 +6454,14 @@ async function runScheduled(
     telegram:
       send,
 
+    newsAlert,
+
     cache:
       getTwelveDataCacheStatus(),
+
+    durationMs:
+      Date.now() -
+      startedAt,
 
     timestamp:
       new Date().toISOString()
@@ -6296,8 +6518,10 @@ function verifyTelegramWebhook(
 
 
   return (
+
     received ===
     expected
+
   );
 
 }
@@ -6914,14 +7138,18 @@ async function healthResponse(
           memory.news.data
         ),
 
+
       age_seconds:
+
         memory.news.data
 
           ? Math.floor(
+
               (
                 Date.now() -
                 memory.news.fetchedAt
               ) / 1000
+
             )
 
           : null,
@@ -7915,11 +8143,159 @@ export default {
 
     ctx.waitUntil(
 
-      runScheduled(
-        env
-      ).catch(
-        () => {}
-      )
+      (async () => {
+
+        try {
+
+          console.log(
+
+            `[CRON] ${CONFIG.VERSION} started at ${new Date().toISOString()}`
+
+          );
+
+
+          const result =
+            await runScheduled(
+              env
+            );
+
+
+          console.log(
+
+            "[CRON] result:",
+
+            JSON.stringify(
+              {
+
+                signal:
+                  result?.signal?.signal,
+
+                score:
+                  result?.signal?.score,
+
+                buyScore:
+                  result?.signal?.buyScore,
+
+                sellScore:
+                  result?.signal?.sellScore,
+
+                directionLead:
+                  result?.signal?.directionLead,
+
+                reason:
+                  result?.signal?.reason,
+
+                telegram:
+                  result?.telegram,
+
+                newsAlert:
+                  result?.newsAlert,
+
+                durationMs:
+                  result?.durationMs
+
+              }
+
+            )
+
+          );
+
+
+          if (
+            result?.telegram?.sent
+          ) {
+
+            console.log(
+              "[CRON] Telegram signal SENT successfully."
+            );
+
+          }
+
+          else {
+
+            console.log(
+
+              "[CRON] Telegram signal NOT sent:",
+
+              result?.telegram?.reason ||
+              "-"
+
+            );
+
+          }
+
+
+        } catch (
+          error
+        ) {
+
+          const message =
+            String(
+              error?.message ||
+              error
+            );
+
+
+          console.error(
+            "[CRON] FAILED:",
+            message
+          );
+
+
+          try {
+
+            if (
+              CONFIG.TELEGRAM_ENABLED
+            ) {
+
+              await sendTelegram(
+
+                env,
+
+                [
+
+                  `🚨 HAKIM GOLD SIGNALS ${CONFIG.VERSION}`,
+
+                  "",
+
+                  "❌ CRON ERROR",
+
+                  `📌 ${message}`,
+
+                  `🕐 ${new Date().toISOString()}`,
+
+                  "",
+
+                  CONFIG.FOOTER
+
+                ].join(
+                  "\n"
+                )
+
+              );
+
+            }
+
+          } catch (
+            telegramError
+          ) {
+
+            console.error(
+
+              "[CRON] Telegram error notification failed:",
+
+              String(
+                telegramError?.message ||
+                telegramError
+              )
+
+            );
+
+          }
+
+        }
+
+      })()
 
     );
 
